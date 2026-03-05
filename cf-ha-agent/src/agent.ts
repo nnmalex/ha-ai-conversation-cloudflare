@@ -13,7 +13,7 @@ const MCP_REFRESH_PATTERN =
   /\b(update mcp|mcp discovery|update config|refresh tools|rediscover)\b/i;
 
 export class HomeAssistantAgent extends Agent<Env> {
-  private mcpReady = false;
+  private mcpRegistered = false;
 
   async onStart(): Promise<void> {
     // Schedule periodic MCP tool refresh if not already scheduled
@@ -24,13 +24,14 @@ export class HomeAssistantAgent extends Agent<Env> {
     }
 
     // If restoreConnectionsFromStorage (called by SDK before onStart)
-    // restored our server, mark MCP as ready
+    // restored our server, mark it as registered
     const { servers } = this.getMcpServers();
     const haServer = Object.values(servers).find(
       (s) => s.name === "home-assistant"
     );
-    if (haServer && haServer.state === "ready") {
-      this.mcpReady = true;
+    if (haServer) {
+      this.mcpRegistered = true;
+      console.log(`[onStart] MCP server restored, state=${haServer.state}`);
     }
   }
 
@@ -43,31 +44,26 @@ export class HomeAssistantAgent extends Agent<Env> {
     }
   }
 
-  private async ensureMcp(request: Request): Promise<void> {
-    if (this.mcpReady) return;
+  /**
+   * Register the MCP server if not yet registered.
+   * This only registers — it does NOT block waiting for connection/discovery.
+   * The SDK connects in the background; tools become available when ready.
+   */
+  private async ensureMcpRegistered(request: Request): Promise<void> {
+    if (this.mcpRegistered) return;
 
-    // Server may have been restored from storage but not yet marked ready
     const { servers } = this.getMcpServers();
     const haServer = Object.values(servers).find(
       (s) => s.name === "home-assistant"
     );
     if (haServer) {
-      // Already registered — wait for it to be ready if still connecting
-      if (haServer.state === "ready") {
-        this.mcpReady = true;
-        return;
-      }
-      // If it's in a failed/connecting state, try re-discovery
-      const id = Object.entries(servers).find(
-        ([, s]) => s.name === "home-assistant"
-      )![0];
-      await this.mcp.discoverIfConnected(id);
-      this.mcpReady = true;
+      this.mcpRegistered = true;
       return;
     }
 
     // First-ever setup — needs request context for callbackHost
     const callbackHost = new URL(request.url).origin;
+    console.log(`[ensureMcp] First-time MCP registration, callbackHost=${callbackHost}`);
     await this.addMcpServer("home-assistant", this.env.HA_MCP_URL, {
       callbackHost,
       transport: {
@@ -77,16 +73,34 @@ export class HomeAssistantAgent extends Agent<Env> {
         },
       },
     });
-    this.mcpReady = true;
+    this.mcpRegistered = true;
   }
 
   async onRequest(request: Request): Promise<Response> {
     try {
+      const url = new URL(request.url);
+
+      // Debug endpoint to check MCP status
+      if (request.method === "GET" && url.pathname.endsWith("/debug")) {
+        const tools = this.mcpRegistered ? this.mcp.getAITools() : [];
+        const { servers } = this.getMcpServers();
+        return Response.json({
+          mcpRegistered: this.mcpRegistered,
+          toolCount: tools.length,
+          toolNames: tools.map((t: { name: string }) => t.name),
+          servers: Object.entries(servers).map(([id, s]) => ({
+            id,
+            name: s.name,
+            state: s.state,
+          })),
+        });
+      }
+
       if (request.method !== "POST") {
         return Response.json({ error: "Method not allowed" }, { status: 405 });
       }
 
-      await this.ensureMcp(request);
+      await this.ensureMcpRegistered(request);
 
       const body = (await request.json()) as ChatRequest;
       if (!body.text) {
@@ -135,14 +149,23 @@ export class HomeAssistantAgent extends Agent<Env> {
 
     try {
       const tools = this.mcp.getAITools();
-      const result = await generateText({
-        model: workersai(this.env.AI_MODEL),
-        system: systemPrompt,
-        messages,
-        tools,
-        stopWhen: stepCountIs(10),
-      });
-      responseText = result.text;
+      console.log(`[chat] ${tools.length} tools available, conversation=${request.conversation_id}`);
+
+      if (tools.length === 0) {
+        // Tools not yet discovered — respond honestly instead of hallucinating
+        responseText =
+          "I'm still connecting to Home Assistant. Please try again in a moment.";
+      } else {
+        const result = await generateText({
+          model: workersai(this.env.AI_MODEL),
+          system: systemPrompt,
+          messages,
+          tools,
+          stopWhen: stepCountIs(10),
+        });
+        console.log(`[chat] steps=${result.steps.length}, toolCalls=${result.steps.reduce((n, s) => n + (s.toolCalls?.length || 0), 0)}`);
+        responseText = result.text;
+      }
     } catch (err) {
       console.error("AI generation error:", err);
 
