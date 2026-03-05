@@ -19,6 +19,18 @@ export default {
       return jsonResponse({ status: "ok" });
     }
 
+    if (url.pathname === "/api/debug" && request.method === "GET") {
+      const authHeader = request.headers.get("Authorization");
+      if (!authHeader || authHeader !== `Bearer ${env.AGENT_API_KEY}`) {
+        return errorResponse("Unauthorized", 401);
+      }
+      const agent = await getAgentByName(
+        env.HOME_ASSISTANT_AGENT,
+        "home-assistant"
+      );
+      return agent.fetch(new Request(request.url.replace("/api/debug", "/agents/home-assistant/debug"), request));
+    }
+
     if (url.pathname === "/api/chat" && request.method === "POST") {
       const authHeader = request.headers.get("Authorization");
       if (!authHeader || authHeader !== `Bearer ${env.AGENT_API_KEY}`) {
