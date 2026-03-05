@@ -21,6 +21,7 @@ from homeassistant.helpers import (
     area_registry as ar,
     device_registry as dr,
     floor_registry as fr,
+    intent,
 )
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -99,7 +100,7 @@ class CloudflareConversationEntity(ConversationEntity):
             ) as resp:
                 if resp.status in (401, 403):
                     return self._error_result(
-                        chat_log,
+                        user_input, chat_log,
                         "Sorry, there's a configuration problem with the cloud assistant.",
                     )
 
@@ -110,7 +111,7 @@ class CloudflareConversationEntity(ConversationEntity):
                         await resp.text(),
                     )
                     return self._error_result(
-                        chat_log,
+                        user_input, chat_log,
                         "Sorry, the cloud assistant had a problem. Please try again.",
                     )
 
@@ -120,26 +121,31 @@ class CloudflareConversationEntity(ConversationEntity):
                 except (KeyError, ValueError, aiohttp.ContentTypeError) as err:
                     _LOGGER.error("Bad response from agent: %s", err)
                     return self._error_result(
-                        chat_log,
+                        user_input, chat_log,
                         "Sorry, I got an unexpected response. Please try again.",
                     )
 
         except TimeoutError:
             return self._error_result(
-                chat_log,
+                user_input, chat_log,
                 "Sorry, the cloud assistant took too long to respond.",
             )
         except aiohttp.ClientError as err:
             _LOGGER.error("Agent connection error: %s", err)
             return self._error_result(
-                chat_log,
+                user_input, chat_log,
                 "Sorry, I can't reach the cloud assistant right now.",
             )
 
         chat_log.async_add_assistant_content_without_tools(
             AssistantContent(agent_id=self.entity_id, content=response_text)
         )
-        return ConversationResult(chat_log=chat_log)
+        response = intent.IntentResponse(language=user_input.language or "en")
+        response.async_set_speech(response_text)
+        return ConversationResult(
+            response=response,
+            conversation_id=user_input.conversation_id,
+        )
 
     def _resolve_area(
         self, device_id: str | None
@@ -168,10 +174,15 @@ class CloudflareConversationEntity(ConversationEntity):
         return area.name, floor_name
 
     def _error_result(
-        self, chat_log: ChatLog, message: str
+        self, user_input: ConversationInput, chat_log: ChatLog, message: str
     ) -> ConversationResult:
         """Create a ConversationResult with an error speech response."""
         chat_log.async_add_assistant_content_without_tools(
             AssistantContent(agent_id=self.entity_id, content=message)
         )
-        return ConversationResult(chat_log=chat_log)
+        response = intent.IntentResponse(language=user_input.language or "en")
+        response.async_set_speech(message)
+        return ConversationResult(
+            response=response,
+            conversation_id=user_input.conversation_id,
+        )
