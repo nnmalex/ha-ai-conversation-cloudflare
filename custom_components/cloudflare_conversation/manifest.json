@@ -1,0 +1,10 @@
+{
+  "domain": "cloudflare_conversation",
+  "name": "Cloudflare Conversation",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": ["conversation"],
+  "documentation": "https://github.com/your-repo/ha-ai",
+  "iot_class": "cloud_polling",
+  "version": "0.1.0"
+}

@@ -1,0 +1,24 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Cloudflare Agent",
+        "description": "Enter the URL and API key for your Cloudflare AI agent.",
+        "data": {
+          "agent_url": "Agent URL",
+          "api_key": "API Key",
+          "user_instructions": "User Instructions (optional)"
+        },
+        "data_description": {
+          "agent_url": "The URL of your deployed Cloudflare agent (e.g. https://cf-ha-agent.your-account.workers.dev)",
+          "api_key": "The API key configured on the Cloudflare agent (AGENT_API_KEY)",
+          "user_instructions": "Additional instructions to include in every request to the AI"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to the agent. Check the URL and try again.",
+      "invalid_auth": "Authentication failed. Check the API key and try again."
+    }
+  }
+}
