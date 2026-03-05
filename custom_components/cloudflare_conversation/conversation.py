@@ -8,6 +8,7 @@ from typing import Any
 import aiohttp
 
 from homeassistant.components.conversation import (
+    AssistantContent,
     ChatLog,
     ConversationEntity,
     ConversationInput,
@@ -135,7 +136,9 @@ class CloudflareConversationEntity(ConversationEntity):
                 "Sorry, I can't reach the cloud assistant right now.",
             )
 
-        chat_log.async_add_assistant_content_without_tools(response_text)
+        chat_log.async_add_assistant_content_without_tools(
+            AssistantContent(agent_id=self.entity_id, content=response_text)
+        )
         return ConversationResult(chat_log=chat_log)
 
     def _resolve_area(
@@ -168,5 +171,7 @@ class CloudflareConversationEntity(ConversationEntity):
         self, chat_log: ChatLog, message: str
     ) -> ConversationResult:
         """Create a ConversationResult with an error speech response."""
-        chat_log.async_add_assistant_content_without_tools(message)
+        chat_log.async_add_assistant_content_without_tools(
+            AssistantContent(agent_id=self.entity_id, content=message)
+        )
         return ConversationResult(chat_log=chat_log)
