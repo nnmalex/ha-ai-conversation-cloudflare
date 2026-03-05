@@ -40,4 +40,22 @@ export default {
 
     return errorResponse("Not found", 404);
   },
+
+  // Cron trigger: wake the DO and refresh MCP tools periodically.
+  // This keeps the MCP connection warm so requests don't hit cold starts.
+  async scheduled(_event: ScheduledEvent, env: Env): Promise<void> {
+    const agent = await getAgentByName(
+      env.HOME_ASSISTANT_AGENT,
+      "home-assistant"
+    );
+    // Send a lightweight POST to the DO to trigger ensureMcpWithTools
+    const url = "https://internal/api/chat";
+    await agent.fetch(
+      new Request(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "__debug__" }),
+      })
+    );
+  },
 } satisfies ExportedHandler<Env>;
