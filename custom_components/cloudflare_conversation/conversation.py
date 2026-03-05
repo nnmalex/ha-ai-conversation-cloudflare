@@ -135,7 +135,7 @@ class CloudflareConversationEntity(ConversationEntity):
                 "Sorry, I can't reach the cloud assistant right now.",
             )
 
-        chat_log.async_add_assistant_content_from_result(response_text)
+        chat_log.async_add_assistant_content_without_tools(response_text)
         return ConversationResult(chat_log=chat_log)
 
     def _resolve_area(
