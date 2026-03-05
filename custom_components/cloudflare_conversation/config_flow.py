@@ -11,7 +11,13 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import CONF_AGENT_URL, CONF_API_KEY, CONF_USER_INSTRUCTIONS, DOMAIN
+from .const import (
+    CONF_AGENT_URL,
+    CONF_API_KEY,
+    CONF_USER_INSTRUCTIONS,
+    DEFAULT_USER_INSTRUCTIONS,
+    DOMAIN,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -19,7 +25,9 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_AGENT_URL): str,
         vol.Required(CONF_API_KEY): str,
-        vol.Optional(CONF_USER_INSTRUCTIONS, default=""): str,
+        vol.Optional(
+            CONF_USER_INSTRUCTIONS, default=DEFAULT_USER_INSTRUCTIONS
+        ): str,
     }
 )
 
