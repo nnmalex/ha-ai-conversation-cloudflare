@@ -76,26 +76,29 @@ export class HomeAssistantAgent extends Agent<Env> {
     this.mcpRegistered = true;
   }
 
+  getMcpStatus() {
+    let toolNames: string[] = [];
+    try {
+      const result = this.mcp.getAITools();
+      if (typeof result === 'object' && result && !Array.isArray(result)) {
+        toolNames = Object.keys(result);
+      }
+    } catch { /* MCP not connected yet */ }
+    const { servers } = this.getMcpServers();
+    return {
+      mcpRegistered: this.mcpRegistered,
+      toolCount: toolNames.length,
+      toolNames,
+      servers: Object.entries(servers).map(([id, s]) => ({
+        id,
+        name: s.name,
+        state: s.state,
+      })),
+    };
+  }
+
   async onRequest(request: Request): Promise<Response> {
     try {
-      const url = new URL(request.url);
-
-      // Debug endpoint to check MCP status
-      if (request.method === "GET" && url.pathname.endsWith("/debug")) {
-        const tools = this.mcpRegistered ? this.mcp.getAITools() : [];
-        const { servers } = this.getMcpServers();
-        return Response.json({
-          mcpRegistered: this.mcpRegistered,
-          toolCount: tools.length,
-          toolNames: tools.map((t: { name: string }) => t.name),
-          servers: Object.entries(servers).map(([id, s]) => ({
-            id,
-            name: s.name,
-            state: s.state,
-          })),
-        });
-      }
-
       if (request.method !== "POST") {
         return Response.json({ error: "Method not allowed" }, { status: 405 });
       }
@@ -103,6 +106,11 @@ export class HomeAssistantAgent extends Agent<Env> {
       await this.ensureMcpRegistered(request);
 
       const body = (await request.json()) as ChatRequest;
+
+      if (body.text === "__debug__") {
+        return Response.json(this.getMcpStatus());
+      }
+
       if (!body.text) {
         return Response.json(
           { response: "Sorry, I didn't receive any text." },
@@ -121,8 +129,9 @@ export class HomeAssistantAgent extends Agent<Env> {
 
       const response = await this.chat(body);
       return Response.json(response);
-    } catch (err) {
-      console.error("Agent request error:", err);
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? `${err.message}\n${err.stack}` : String(err);
+      console.error("Agent request error:", errMsg);
       return Response.json(
         {
           response:
@@ -148,10 +157,17 @@ export class HomeAssistantAgent extends Agent<Env> {
     let responseText: string;
 
     try {
-      const tools = this.mcp.getAITools();
-      console.log(`[chat] ${tools.length} tools available, conversation=${request.conversation_id}`);
+      let tools: Record<string, unknown> = {};
+      try {
+        const result = this.mcp.getAITools();
+        if (typeof result === 'object' && result && !Array.isArray(result)) {
+          tools = result as Record<string, unknown>;
+        }
+      } catch { /* MCP not connected yet */ }
+      const toolCount = Object.keys(tools).length;
+      console.log(`[chat] ${toolCount} tools available, conversation=${request.conversation_id}`);
 
-      if (tools.length === 0) {
+      if (toolCount === 0) {
         // Tools not yet discovered — respond honestly instead of hallucinating
         responseText =
           "I'm still connecting to Home Assistant. Please try again in a moment.";
