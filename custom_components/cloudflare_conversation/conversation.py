@@ -98,7 +98,7 @@ class CloudflareConversationEntity(ConversationEntity):
             ) as resp:
                 if resp.status in (401, 403):
                     return self._error_result(
-                        user_input,
+                        chat_log,
                         "Sorry, there's a configuration problem with the cloud assistant.",
                     )
 
@@ -109,7 +109,7 @@ class CloudflareConversationEntity(ConversationEntity):
                         await resp.text(),
                     )
                     return self._error_result(
-                        user_input,
+                        chat_log,
                         "Sorry, the cloud assistant had a problem. Please try again.",
                     )
 
@@ -119,19 +119,19 @@ class CloudflareConversationEntity(ConversationEntity):
                 except (KeyError, ValueError, aiohttp.ContentTypeError) as err:
                     _LOGGER.error("Bad response from agent: %s", err)
                     return self._error_result(
-                        user_input,
+                        chat_log,
                         "Sorry, I got an unexpected response. Please try again.",
                     )
 
         except TimeoutError:
             return self._error_result(
-                user_input,
+                chat_log,
                 "Sorry, the cloud assistant took too long to respond.",
             )
         except aiohttp.ClientError as err:
             _LOGGER.error("Agent connection error: %s", err)
             return self._error_result(
-                user_input,
+                chat_log,
                 "Sorry, I can't reach the cloud assistant right now.",
             )
 
@@ -165,18 +165,8 @@ class CloudflareConversationEntity(ConversationEntity):
         return area.name, floor_name
 
     def _error_result(
-        self, user_input: ConversationInput, message: str
+        self, chat_log: ChatLog, message: str
     ) -> ConversationResult:
         """Create a ConversationResult with an error speech response."""
-        from homeassistant.helpers.intent import IntentResponse
-
-        response = IntentResponse(language=user_input.language or "en")
-        response.async_set_speech(message)
-        return ConversationResult(
-            chat_log=ChatLog(
-                hass=self.hass,
-                conversation_id=user_input.conversation_id or "",
-                user_input=user_input,
-            ),
-            response=response,
-        )
+        chat_log.async_add_assistant_content_without_tools(message)
+        return ConversationResult(chat_log=chat_log)
