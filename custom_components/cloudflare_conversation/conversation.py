@@ -46,8 +46,8 @@ async def async_setup_entry(
 class CloudflareConversationEntity(ConversationEntity):
     """Conversation entity that forwards to Cloudflare agent."""
 
-    _attr_has_entity_name = True
-    _attr_name = None
+    _attr_has_entity_name = False
+    _attr_name = "Cloudflare Conversation"
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         """Initialize the entity."""
