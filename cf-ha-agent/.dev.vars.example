@@ -1,0 +1,6 @@
+# Copy this file to .dev.vars and fill in your values
+# HA must be publicly accessible (e.g. via Cloudflare Tunnel or Nabu Casa)
+
+HA_MCP_URL=https://your-ha-instance.example.com/api/mcp
+HA_ACCESS_TOKEN=your_ha_long_lived_access_token
+AGENT_API_KEY=a_strong_random_api_key
