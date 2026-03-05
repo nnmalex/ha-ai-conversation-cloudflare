@@ -4,7 +4,7 @@
   "codeowners": [],
   "config_flow": true,
   "dependencies": ["conversation"],
-  "documentation": "https://github.com/your-repo/ha-ai",
+  "documentation": "https://github.com/nnmalex/ha-ai-conversation-cloudflare",
   "iot_class": "cloud_polling",
-  "version": "0.1.0"
+  "version": "0.1.4"
 }
