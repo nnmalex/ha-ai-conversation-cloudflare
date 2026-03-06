@@ -23,6 +23,7 @@ sequence:
   - action: button.press
     target:
       entity_id: >-
-        {{ area_entities(area)
-           | select('match', 'button\\..*favori')
+        {% set resolved = area_id(area) | default(area, true) %}
+        {{ area_entities(resolved)
+           | select('match', 'button.*favouri')
            | first | default('') }}

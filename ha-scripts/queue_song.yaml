@@ -29,7 +29,7 @@ fields:
 sequence:
   - action: music_assistant.play_media
     target:
-      area_id: "{{ area }}"
+      area_id: "{{ area_id(area) | default(area, true) }}"
     data:
       media_id: "{{ query }}"
       media_type: track
