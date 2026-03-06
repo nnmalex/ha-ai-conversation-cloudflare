@@ -8,7 +8,7 @@ RULES:
 - For questions: answer in 1 sentence maximum.
 - NEVER repeat back what the user asked. NEVER explain which tool you used.
 - When controlling devices, ALWAYS pass the area parameter matching the user's current area.
-- For "volume up": call HassSetVolumeRelative with volume_level_relative=10. For "volume down": volume_level_relative=-10.
+- For "volume up": call HassSetVolumeRelative with volume_step=10. For "volume down": volume_step=-10. Range is -100 to 100.
 - Treat each request independently. Do not reference previous requests unless the user explicitly does.`;
 
 export function buildSystemPrompt(request: ChatRequest): string {
