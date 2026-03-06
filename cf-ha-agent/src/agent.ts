@@ -240,7 +240,7 @@ export class HomeAssistantAgent extends Agent<Env> {
       ...this.sql`SELECT role, content FROM messages
         WHERE conversation_id = ${conversationId}
         ORDER BY created_at ASC
-        LIMIT 100`,
+        LIMIT 6`,
     ];
     return rows.map((r) => ({
       role: r.role as Message["role"],
@@ -264,7 +264,7 @@ export class HomeAssistantAgent extends Agent<Env> {
           SELECT id FROM messages
           WHERE conversation_id = ${conversationId}
           ORDER BY created_at DESC
-          LIMIT 100
+          LIMIT 6
         )`;
   }
 }

@@ -1,0 +1,36 @@
+# Queue Song (Play Next)
+# Searches for a song and adds it next in the playback queue
+# instead of replacing what's currently playing.
+# Triggered by "play <song> next" / "queue <song>".
+#
+# To install: copy into your HA scripts.yaml or create via UI.
+# Then expose via Settings > Voice Assistants > Expose Entities.
+
+queue_song:
+  alias: "Queue Song"
+  icon: "mdi:playlist-plus"
+  description: >-
+    Search for a song, album, or artist and add it next in the playback
+    queue without stopping the currently playing music. Use when the user
+    says "play <something> next" or "queue <something>".
+  fields:
+    query:
+      name: Search Query
+      description: "The song, artist, or album to search for and queue"
+      required: true
+      selector:
+        text:
+    area:
+      name: Area
+      description: "The area where music is playing"
+      required: true
+      selector:
+        area:
+  sequence:
+    - action: music_assistant.play_media
+      target:
+        area_id: "{{ area }}"
+      data:
+        media_id: "{{ query }}"
+        media_type: track
+        enqueue: next
