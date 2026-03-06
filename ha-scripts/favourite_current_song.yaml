@@ -22,8 +22,4 @@ fields:
 sequence:
   - action: button.press
     target:
-      entity_id: >-
-        {% set resolved = area_id(area) | default(area, true) %}
-        {{ area_entities(resolved)
-           | select('match', 'button.*favouri')
-           | first | default('') }}
+      entity_id: "{{ area_entities(area_id(area) or area) | select('match', 'button.*favouri') | first | default('') }}"
