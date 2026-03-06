@@ -1,9 +1,17 @@
 # Favourite Current Song
-# Presses the Music Assistant "favorite" button for the media player
-# in the specified area.
-# Triggered by "I like this song" / "favourite this".
+# Uses Music Assistant's REST API to favourite the currently playing track.
+# The button.press approach doesn't work from HA (known MA issue).
 #
-# To install: create via Settings > Automations & Scenes > Scripts > Add Script.
+# PREREQUISITE: Add this to your configuration.yaml and restart HA:
+#
+#   rest_command:
+#     ma_favorite_current_song:
+#       url: "http://localhost:8095/api"
+#       method: POST
+#       content_type: "application/json"
+#       payload: '{"message_id":"fav","command":"music/favorites/add_item","args":{"item":"{{ item }}"}}'
+#
+# To install the script: Settings > Automations & Scenes > Scripts > Add Script.
 # Switch to YAML mode and paste everything below.
 # Then expose via Settings > Voice Assistants > Expose Entities.
 
@@ -20,6 +28,16 @@ fields:
     selector:
       area:
 sequence:
-  - action: button.press
-    target:
-      entity_id: "{{ area_entities(area_id(area) or area) | select('match', 'button.*favouri') | first | default('') }}"
+  - variables:
+      player: >-
+        {{ area_entities(area_id(area) or area)
+           | select('match', 'media_player.')
+           | select('is_state', 'playing')
+           | first | default('') }}
+      track_uri: >-
+        {{ state_attr(player, 'media_content_id') if player else '' }}
+  - condition: template
+    value_template: "{{ track_uri != '' }}"
+  - action: rest_command.ma_favorite_current_song
+    data:
+      item: "{{ track_uri }}"

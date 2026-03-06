@@ -103,6 +103,8 @@ Standard media controls (pause, next, previous, volume) also work via built-in i
 2. Go to **Settings → Voice Assistants → Expose** and expose the scripts
 3. The scripts automatically appear as MCP tools that the agent can call
 
+**Favouriting the current song** — The MA-provided favourite button entity doesn't work when triggered from HA (known MA issue). As a workaround, you can call MA's REST API directly using an HA `rest_command`. See `ha-scripts/favourite_current_song.yaml` for the script and required `rest_command` configuration.
+
 ### Extending with Custom Scripts
 
 Any HA integration not covered by built-in intents can be made available by creating a script and exposing it:
@@ -112,6 +114,12 @@ Any HA integration not covered by built-in intents can be made available by crea
 3. The agent discovers it automatically — no code changes needed
 
 This is HA's intended extensibility mechanism. The agent dynamically discovers all available MCP tools on startup, including script-based ones.
+
+Example scripts are provided in the `ha-scripts/` directory:
+
+- **`play_random_music.yaml`** — Play shuffled library tracks ("play music", "play something")
+- **`queue_song.yaml`** — Add a song next in the queue without stopping playback ("queue X", "play X next")
+- **`favourite_current_song.yaml`** — Favourite the currently playing track ("I like this song")
 
 ## Configuration
 
