@@ -1,13 +1,10 @@
 import { Agent } from "agents";
-import { generateText, stepCountIs } from "ai";
+import { generateText, stepCountIs, type CoreMessage } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
 import type { ChatRequest, ChatResponse } from "./types";
 import { buildSystemPrompt } from "./system-prompt";
 
-interface Message {
-  role: "system" | "user" | "assistant";
-  content: string;
-}
+const MAX_HISTORY_MESSAGES = 20; // ~5 exchanges with tool calls
 
 const MCP_REFRESH_PATTERN =
   /\b(update mcp|mcp discovery|update config|refresh tools|rediscover)\b/i;
@@ -182,18 +179,17 @@ export class HomeAssistantAgent extends Agent<Env> {
     const history = this.loadHistory(request.conversation_id);
     const systemPrompt = buildSystemPrompt(request);
 
-    const messages: Message[] = [
-      ...history,
-      { role: "user", content: request.text },
-    ];
+    const userMessage: CoreMessage = { role: "user", content: request.text };
+    const messages: CoreMessage[] = [...history, userMessage];
 
     const workersai = createWorkersAI({ binding: this.env.AI });
     let responseText: string;
+    let responseMessages: CoreMessage[] = [];
 
     try {
       const tools = this.getToolsSafe();
       const toolCount = Object.keys(tools).length;
-      console.log(`[chat] ${toolCount} tools, conversation=${request.conversation_id}`);
+      console.log(`[chat] ${toolCount} tools, history=${history.length} msgs, conversation=${request.conversation_id}`);
 
       const result = await generateText({
         model: workersai(this.env.AI_MODEL),
@@ -203,6 +199,8 @@ export class HomeAssistantAgent extends Agent<Env> {
       });
       console.log(`[chat] steps=${result.steps.length}, toolCalls=${result.steps.reduce((n, s) => n + (s.toolCalls?.length || 0), 0)}`);
       responseText = result.text;
+      // Store full response chain including tool-call and tool-result messages
+      responseMessages = result.response.messages as CoreMessage[];
     } catch (err) {
       console.error("AI generation error:", err);
 
@@ -214,57 +212,43 @@ export class HomeAssistantAgent extends Agent<Env> {
         responseText =
           "Sorry, I'm having trouble thinking right now. Please try again.";
       }
+      responseMessages = [{ role: "assistant", content: responseText }];
     }
 
-    this.saveMessage(request.conversation_id, "user", request.text);
-    this.saveMessage(request.conversation_id, "assistant", responseText);
-    this.pruneHistory(request.conversation_id);
+    // Save full message chain — includes tool calls so the AI knows
+    // previous responses involved tool usage, not just text
+    const allMessages = [...history, userMessage, ...responseMessages];
+    this.saveHistory(
+      request.conversation_id,
+      allMessages.slice(-MAX_HISTORY_MESSAGES)
+    );
 
     return { response: responseText, conversation_id: request.conversation_id };
   }
 
   private ensureSchema(): void {
-    this.sql`CREATE TABLE IF NOT EXISTS messages (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      conversation_id TEXT NOT NULL,
-      role TEXT NOT NULL,
-      content TEXT NOT NULL,
-      created_at INTEGER DEFAULT (unixepoch())
+    this.sql`CREATE TABLE IF NOT EXISTS conversations (
+      conversation_id TEXT PRIMARY KEY,
+      messages_json TEXT NOT NULL,
+      updated_at INTEGER DEFAULT (unixepoch())
     )`;
-    this.sql`CREATE INDEX IF NOT EXISTS idx_messages_conv
-      ON messages(conversation_id, created_at)`;
   }
 
-  private loadHistory(conversationId: string): Message[] {
+  private loadHistory(conversationId: string): CoreMessage[] {
     const rows = [
-      ...this.sql`SELECT role, content FROM messages
-        WHERE conversation_id = ${conversationId}
-        ORDER BY created_at ASC
-        LIMIT 6`,
+      ...this.sql`SELECT messages_json FROM conversations
+        WHERE conversation_id = ${conversationId}`,
     ];
-    return rows.map((r) => ({
-      role: r.role as Message["role"],
-      content: r.content as string,
-    }));
+    if (rows.length === 0) return [];
+    try {
+      return JSON.parse(rows[0].messages_json as string);
+    } catch {
+      return [];
+    }
   }
 
-  private saveMessage(
-    conversationId: string,
-    role: string,
-    content: string
-  ): void {
-    this.sql`INSERT INTO messages (conversation_id, role, content)
-      VALUES (${conversationId}, ${role}, ${content})`;
-  }
-
-  private pruneHistory(conversationId: string): void {
-    this.sql`DELETE FROM messages
-      WHERE conversation_id = ${conversationId}
-        AND id NOT IN (
-          SELECT id FROM messages
-          WHERE conversation_id = ${conversationId}
-          ORDER BY created_at DESC
-          LIMIT 6
-        )`;
+  private saveHistory(conversationId: string, messages: CoreMessage[]): void {
+    this.sql`INSERT OR REPLACE INTO conversations (conversation_id, messages_json, updated_at)
+      VALUES (${conversationId}, ${JSON.stringify(messages)}, unixepoch())`;
   }
 }
