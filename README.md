@@ -103,7 +103,21 @@ Standard media controls (pause, next, previous, volume) also work via built-in i
 2. Go to **Settings → Voice Assistants → Expose** and expose the scripts
 3. The scripts automatically appear as MCP tools that the agent can call
 
-**Favouriting the current song** — The MA-provided favourite button entity doesn't work when triggered from HA (known MA issue). As a workaround, you can call MA's REST API directly using an HA `rest_command`. See `ha-scripts/favourite_current_song.yaml` for the script and required `rest_command` configuration.
+**Favouriting the current song** — The MA-provided favourite button entity doesn't work when triggered from HA ([known MA issue](https://github.com/orgs/music-assistant/discussions/1984)). As a workaround, call MA's REST API directly via an HA `rest_command`:
+
+1. Add to your `configuration.yaml`:
+   ```yaml
+   rest_command:
+     ma_favorite_current_song:
+       url: "http://localhost:8095/api"
+       method: POST
+       content_type: "application/json"
+       payload: '{"message_id":"fav","command":"music/favorites/add_item","args":{"item":"{{ item }}"}}'
+   ```
+   Adjust the URL if your Music Assistant server is not on the default port.
+
+2. Restart Home Assistant
+3. Create the script from `ha-scripts/favourite_current_song.yaml` and expose it via **Settings → Voice Assistants**
 
 ### Extending with Custom Scripts
 
