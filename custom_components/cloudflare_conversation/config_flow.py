@@ -10,6 +10,7 @@ import voluptuous as vol
 
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.selector import TextSelector, TextSelectorConfig, TextSelectorType
 
 from .const import (
     CONF_AGENT_URL,
@@ -27,7 +28,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
         vol.Required(CONF_API_KEY): str,
         vol.Optional(
             CONF_USER_INSTRUCTIONS, default=DEFAULT_USER_INSTRUCTIONS
-        ): str,
+        ): TextSelector(TextSelectorConfig(multiline=True)),
     }
 )
 
