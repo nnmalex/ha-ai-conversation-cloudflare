@@ -3,26 +3,26 @@
 # in the specified area.
 # Triggered by "I like this song" / "favourite this".
 #
-# To install: copy into your HA scripts.yaml or create via UI.
+# To install: create via Settings > Automations & Scenes > Scripts > Add Script.
+# Switch to YAML mode and paste everything below.
 # Then expose via Settings > Voice Assistants > Expose Entities.
 
-favourite_current_song:
-  alias: "Favourite Current Song"
-  icon: "mdi:heart"
-  description: >-
-    Mark the currently playing song as a favourite. Use when the user
-    says "I like this song", "favourite this", or "save this song".
-  fields:
-    area:
-      name: Area
-      description: "The area where music is playing"
-      required: true
-      selector:
-        area:
-  sequence:
-    - action: button.press
-      target:
-        entity_id: >-
-          {{ area_entities(area)
-             | select('match', 'button\\..*favori')
-             | first | default('') }}
+alias: "Favourite Current Song"
+icon: "mdi:heart"
+description: >-
+  Mark the currently playing song as a favourite. Use when the user
+  says "I like this song", "favourite this", or "save this song".
+fields:
+  area:
+    name: Area
+    description: "The area where music is playing"
+    required: true
+    selector:
+      area:
+sequence:
+  - action: button.press
+    target:
+      entity_id: >-
+        {{ area_entities(area)
+           | select('match', 'button\\..*favori')
+           | first | default('') }}

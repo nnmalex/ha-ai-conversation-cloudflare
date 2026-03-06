@@ -2,27 +2,27 @@
 # Starts playing Music Assistant's "500 Random tracks (from library)" playlist.
 # Triggered by "play music" / "play something" without a specific query.
 #
-# To install: copy into your HA scripts.yaml or create via UI.
+# To install: create via Settings > Automations & Scenes > Scripts > Add Script.
+# Switch to YAML mode and paste everything below.
 # Then expose via Settings > Voice Assistants > Expose Entities.
 
-play_random_music:
-  alias: "Play Random Music"
-  icon: "mdi:shuffle-variant"
-  description: >-
-    Start playing random music from the library in the specified area.
-    Use when the user says "play music" or "play something" without
-    specifying an artist, song, or album.
-  fields:
-    area:
-      name: Area
-      description: "The area to play music in"
-      required: true
-      selector:
-        area:
-  sequence:
-    - action: music_assistant.play_media
-      target:
-        area_id: "{{ area }}"
-      data:
-        media_id: "500 Random tracks (from library)"
-        media_type: playlist
+alias: "Play Random Music"
+icon: "mdi:shuffle-variant"
+description: >-
+  Start playing random music from the library in the specified area.
+  Use when the user says "play music" or "play something" without
+  specifying an artist, song, or album.
+fields:
+  area:
+    name: Area
+    description: "The area to play music in"
+    required: true
+    selector:
+      area:
+sequence:
+  - action: music_assistant.play_media
+    target:
+      area_id: "{{ area }}"
+    data:
+      media_id: "500 Random tracks (from library)"
+      media_type: playlist
