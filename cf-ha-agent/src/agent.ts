@@ -9,6 +9,9 @@ const MAX_HISTORY_MESSAGES = 20; // ~5 exchanges with tool calls
 const MCP_REFRESH_PATTERN =
   /\b(update mcp|mcp discovery|update config|refresh tools|rediscover)\b/i;
 
+const RESET_CONTEXT_PATTERN =
+  /\b(reset context|clear context|clear history|reset history|start fresh|forget everything)\b/i;
+
 export class HomeAssistantAgent extends Agent<Env> {
   async onStart(): Promise<void> {
     // Schedule periodic MCP tool refresh
@@ -158,6 +161,15 @@ export class HomeAssistantAgent extends Agent<Env> {
         });
       }
 
+      // On-demand context reset
+      if (RESET_CONTEXT_PATTERN.test(body.text)) {
+        this.clearHistory(body.conversation_id);
+        return Response.json({
+          response: "Done, I've cleared our conversation history. What can I help you with?",
+          conversation_id: body.conversation_id,
+        });
+      }
+
       const response = await this.chat(body);
       return Response.json(response);
     } catch (err: unknown) {
@@ -250,5 +262,10 @@ export class HomeAssistantAgent extends Agent<Env> {
   private saveHistory(conversationId: string, messages: CoreMessage[]): void {
     this.sql`INSERT OR REPLACE INTO conversations (conversation_id, messages_json, updated_at)
       VALUES (${conversationId}, ${JSON.stringify(messages)}, unixepoch())`;
+  }
+
+  private clearHistory(conversationId: string): void {
+    this.sql`DELETE FROM conversations WHERE conversation_id = ${conversationId}`;
+    console.log(`[clearHistory] Cleared history for conversation=${conversationId}`);
   }
 }
