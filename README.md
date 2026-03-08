@@ -134,6 +134,22 @@ Example scripts are provided in the `ha-scripts/` directory:
 - **`play_random_music.yaml`** — Play shuffled library tracks ("play music", "play something")
 - **`queue_song.yaml`** — Add a song next in the queue without stopping playback ("queue X", "play X next")
 - **`favourite_current_song.yaml`** — Favourite the currently playing track ("I like this song")
+- **`play_bbc_news.yaml`** — Play the latest BBC News episode ("what's the news", "give me the news")
+
+**BBC News prerequisite** — the script reads the current episode ID from a sensor that polls the BBC Sounds page. Add this to your `configuration.yaml` and restart HA before creating the script:
+
+```yaml
+rest:
+  - scan_interval: 1800   # refresh every 30 minutes
+    resource: https://www.bbc.co.uk/sounds/brand/p05hh4qy
+    sensor:
+      - name: "BBC News Latest Episode ID"
+        unique_id: bbc_news_latest_episode_id
+        value_template: >-
+          {{ (value | regex_findall('POS&quot;:&quot;1&quot;}" data-bbc-result="([a-z0-9]+)'))[0] | default('') }}
+```
+
+Verify the sensor has a value (e.g. `p0n5d399`) in **Developer Tools → States** before testing the script.
 
 ## Configuration
 
