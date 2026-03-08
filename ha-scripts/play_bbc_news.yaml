@@ -1,0 +1,42 @@
+# Play BBC News
+# Plays the latest episode of BBC News (via BBC Sounds in Music Assistant).
+# The current episode ID is read from the sensor.bbc_news_latest_episode_id sensor —
+# see the REST sensor snippet in configuration.yaml below.
+#
+# PREREQUISITE: Add the following to your configuration.yaml and restart HA:
+#
+#   rest:
+#     - scan_interval: 1800   # refresh every 30 minutes
+#       resource: https://podcasts.files.bbci.co.uk/p05hh4qy.rss
+#       sensor:
+#         - name: "BBC News Latest Episode ID"
+#           unique_id: bbc_news_latest_episode_id
+#           value_template: >-
+#             {{ (value | regex_findall('urn:bbc:podcast:([a-z0-9]{8,12})'))[0] | default('') }}
+#
+# To install the script: Settings > Automations & Scenes > Scripts > Add Script.
+# Switch to YAML mode and paste everything below.
+# Then expose via Settings > Voice Assistants.
+
+alias: "Play BBC News"
+icon: "mdi:newspaper"
+description: >-
+  Play the latest BBC News audio episode. Use when the user says "what's the
+  news", "give me the news", or "play the news".
+fields:
+  area:
+    name: Area
+    description: "The area to play in"
+    required: true
+    selector:
+      area:
+sequence:
+  - condition: template
+    value_template: "{{ states('sensor.bbc_news_latest_episode_id') not in ('', 'unavailable', 'unknown') }}"
+  - action: music_assistant.play_media
+    target:
+      area_id: "{{ area_id(area) | default(area, true) }}"
+    data:
+      media_id: "bbc_sounds://track/{{ states('sensor.bbc_news_latest_episode_id') }}"
+      media_type: track
+      enqueue: replace
