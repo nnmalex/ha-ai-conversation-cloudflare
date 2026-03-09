@@ -4,7 +4,28 @@ import { createWorkersAI } from "workers-ai-provider";
 import type { ChatRequest, ChatResponse } from "./types";
 import { buildSystemPrompt } from "./system-prompt";
 
-const MAX_HISTORY_MESSAGES = 20; // ~5 exchanges with tool calls
+const DEFAULT_HISTORY_TURNS = 2;
+
+const QUESTION_PATTERN =
+  /^\s*(what|where|when|who|which|how|why|is|are|can|could|would|will|does|do|did)\b|\?/i;
+
+function isQuestion(text: string): boolean {
+  return QUESTION_PATTERN.test(text) || text.trimEnd().endsWith("?");
+}
+
+function countUserTurns(messages: CoreMessage[]): number {
+  return messages.filter((m) => m.role === "user").length;
+}
+
+/** Keep the last `maxTurns` user-initiated turns (plus all messages between them). */
+function trimToTurns(messages: CoreMessage[], maxTurns: number): CoreMessage[] {
+  const userIndices = messages.reduce<number[]>((acc, msg, i) => {
+    if (msg.role === "user") acc.push(i);
+    return acc;
+  }, []);
+  if (userIndices.length <= maxTurns) return messages;
+  return messages.slice(userIndices[userIndices.length - maxTurns]);
+}
 
 const MCP_REFRESH_PATTERN =
   /\b(update mcp|mcp discovery|update config|refresh tools|rediscover)\b/i;
@@ -228,11 +249,15 @@ export class HomeAssistantAgent extends Agent<Env> {
     }
 
     // Save full message chain — includes tool calls so the AI knows
-    // previous responses involved tool usage, not just text
+    // previous responses involved tool usage, not just text.
+    // Questions expand the window by 1 each time; non-questions reset to default.
     const allMessages = [...history, userMessage, ...responseMessages];
+    const turnsToKeep = isQuestion(request.text)
+      ? countUserTurns(allMessages)
+      : DEFAULT_HISTORY_TURNS;
     this.saveHistory(
       request.conversation_id,
-      allMessages.slice(-MAX_HISTORY_MESSAGES)
+      trimToTurns(allMessages, turnsToKeep)
     );
 
     return { response: responseText, conversation_id: request.conversation_id };
