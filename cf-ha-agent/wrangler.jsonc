@@ -33,6 +33,10 @@
     "enabled": true
   },
 
+  "secrets": {
+    "required": ["HA_MCP_URL", "HA_ACCESS_TOKEN", "AGENT_API_KEY"]
+  },
+
   // Wake the DO every 5 minutes to keep MCP connection + tools warm
   "triggers": {
     "crons": ["*/5 * * * *"]
