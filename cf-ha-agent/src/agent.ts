@@ -70,7 +70,11 @@ export class HomeAssistantAgent extends Agent<Env> {
     }
     await this.discoverHaConfig();
     // Safety net: process any expired timers that the scheduled callback missed
-    await this.handleTimerExpiry();
+    try {
+      await this.handleTimerExpiry();
+    } catch (e) {
+      console.warn("[refreshMcp] handleTimerExpiry safety net failed:", e);
+    }
   }
 
   private async discoverHaConfig(): Promise<void> {
