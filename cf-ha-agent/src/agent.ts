@@ -619,7 +619,10 @@ export class HomeAssistantAgent extends Agent<Env> {
       console.error("AI generation error:", err);
 
       const errorMsg = String(err);
-      if (errorMsg.includes("MCP") || errorMsg.includes("mcp")) {
+      if (errorMsg.includes("4006") || errorMsg.includes("neurons")) {
+        responseText =
+          "Sorry, the AI daily allowance has been used up. Try again tomorrow.";
+      } else if (errorMsg.includes("MCP") || errorMsg.includes("mcp")) {
         responseText =
           "Sorry, I can't reach Home Assistant right now.";
       } else {
@@ -669,7 +672,19 @@ export class HomeAssistantAgent extends Agent<Env> {
     ];
     if (rows.length === 0) return [];
     try {
-      return JSON.parse(rows[0].messages_json as string);
+      const messages = JSON.parse(rows[0].messages_json as string) as ModelMessage[];
+      // Migrate old AI SDK format: tool-result parts used "result" instead of "output"
+      for (const msg of messages) {
+        if (Array.isArray(msg.content)) {
+          for (const part of msg.content as Record<string, unknown>[]) {
+            if (part.type === "tool-result" && "result" in part && !("output" in part)) {
+              part.output = part.result;
+              delete part.result;
+            }
+          }
+        }
+      }
+      return messages;
     } catch {
       return [];
     }
