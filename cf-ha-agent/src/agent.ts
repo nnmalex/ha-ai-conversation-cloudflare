@@ -267,7 +267,10 @@ export class HomeAssistantAgent extends Agent<Env> {
 
   async alarm(): Promise<void> {
     // Let the base Agent class handle its own scheduled callbacks (e.g. refreshMcp cron)
-    await (super as unknown as { alarm?: () => Promise<void> }).alarm?.();
+    const proto = Object.getPrototypeOf(Object.getPrototypeOf(this));
+    if (typeof proto.alarm === "function") {
+      await proto.alarm.call(this);
+    }
 
     this.ensureSchema();
     const now = Math.floor(Date.now() / 1000);
