@@ -74,17 +74,33 @@ export class HomeAssistantAgent extends Agent<Env> {
   private async discoverHaConfig(): Promise<void> {
     try {
       const base = new URL(this.env.HA_MCP_URL).origin;
-      const res = await fetch(`${base}/api/assist_pipeline/pipeline`, {
-        headers: { Authorization: `Bearer ${this.env.HA_ACCESS_TOKEN}` },
-      });
-      if (!res.ok) return;
-      const data = (await res.json()) as { pipelines?: Array<{ preferred?: boolean; tts_engine?: string }> };
-      const pipelines = data.pipelines ?? (Array.isArray(data) ? (data as Array<{ preferred?: boolean; tts_engine?: string }>) : []);
-      const preferred = pipelines.find((p) => p.preferred) ?? pipelines[0];
-      if (preferred?.tts_engine) {
-        this.ensureSchema();
-        this.sql`INSERT OR REPLACE INTO config (key, value) VALUES ('tts_engine', ${preferred.tts_engine})`;
-        console.log(`[discoverHaConfig] tts_engine=${preferred.tts_engine}`);
+      const headers = { Authorization: `Bearer ${this.env.HA_ACCESS_TOKEN}` };
+      this.ensureSchema();
+
+      // Discover TTS engine from default Assist pipeline
+      const pipelineRes = await fetch(`${base}/api/assist_pipeline/pipeline`, { headers });
+      if (pipelineRes.ok) {
+        const data = (await pipelineRes.json()) as { pipelines?: Array<{ preferred?: boolean; tts_engine?: string }> };
+        const pipelines = data.pipelines ?? (Array.isArray(data) ? (data as Array<{ preferred?: boolean; tts_engine?: string }>) : []);
+        const preferred = pipelines.find((p) => p.preferred) ?? pipelines[0];
+        if (preferred?.tts_engine) {
+          this.sql`INSERT OR REPLACE INTO config (key, value) VALUES ('tts_engine', ${preferred.tts_engine})`;
+          console.log(`[discoverHaConfig] tts_engine=${preferred.tts_engine}`);
+        }
+      }
+
+      // Discover timer slots: any timer.X entity that has a matching input_text.timer_name_X entity
+      const statesRes = await fetch(`${base}/api/states`, { headers });
+      if (statesRes.ok) {
+        const states = (await statesRes.json()) as Array<{ entity_id: string }>;
+        const entityIds = new Set(states.map((s) => s.entity_id));
+        const timerSlots = states
+          .map((s) => s.entity_id)
+          .filter((id) => id.startsWith("timer."))
+          .filter((id) => entityIds.has(id.replace("timer.", "input_text.timer_name_")));
+        const value = timerSlots.join(",");
+        this.sql`INSERT OR REPLACE INTO config (key, value) VALUES ('timer_slots', ${value})`;
+        console.log(`[discoverHaConfig] timer_slots=${value || "(none)"}`);
       }
     } catch (e) {
       console.warn("[discoverHaConfig] skipped:", e);
@@ -287,7 +303,7 @@ export class HomeAssistantAgent extends Agent<Env> {
     this.scheduleNextAlarm();
   }
 
-  private getTimerTools(satelliteId?: string): Record<string, unknown> {
+  private getTimerTools(satelliteId: string | undefined, timerSlots: string): Record<string, unknown> {
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const agent = this;
 
@@ -344,7 +360,7 @@ export class HomeAssistantAgent extends Agent<Env> {
           if (!durationSecs) return `Couldn't understand duration "${duration}".`;
 
           const timerName = name?.trim() || formatDurationName(durationSecs);
-          const slots = (agent.env.TIMER_SLOTS || "").split(",").map((s) => s.trim()).filter(Boolean);
+          const slots = timerSlots.split(",").map((s) => s.trim()).filter(Boolean);
           const occupied = new Set(
             ([...agent.sql`SELECT slot_entity_id FROM timers`] as Array<{ slot_entity_id: string }>)
               .map((r) => r.slot_entity_id)
@@ -416,8 +432,9 @@ export class HomeAssistantAgent extends Agent<Env> {
 
     try {
       const mcpTools = this.getToolsSafe();
-      const timerTools = (this.env.TIMER_SLOTS || "").trim()
-        ? this.getTimerTools(request.context?.satellite_id)
+      const timerSlotsRow = [...this.sql`SELECT value FROM config WHERE key = 'timer_slots'`][0] as { value: string } | undefined;
+      const timerTools = timerSlotsRow?.value
+        ? this.getTimerTools(request.context?.satellite_id, timerSlotsRow.value)
         : {};
       const tools = { ...mcpTools, ...timerTools };
       const toolCount = Object.keys(tools).length;

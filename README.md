@@ -157,18 +157,12 @@ The agent supports setting arbitrary named and unnamed timers ("set a 5 minute p
 
 ### HA Setup
 
-For each timer slot you want to support (e.g. up to 5 simultaneous timers), create two helpers in **Settings → Helpers**:
+Timer slots are discovered automatically — no configuration needed in `wrangler.jsonc`. For each concurrent timer you want to support, create two helpers in **Settings → Helpers**:
 
-1. **Timer** — entity ID must follow the pattern `timer.slot_N` (e.g. `timer.slot_1`, `timer.slot_2`)
-2. **Text** — entity ID must follow the pattern `input_text.timer_name_slot_N` (e.g. `input_text.timer_name_slot_1`)
+1. **Timer** — any entity ID starting with `timer.` (e.g. `timer.slot_1`, `timer.kitchen`)
+2. **Text** — entity ID derived by replacing `timer.` with `input_text.timer_name_` (e.g. `input_text.timer_name_slot_1`, `input_text.timer_name_kitchen`)
 
-Then add the slot IDs to `cf-ha-agent/wrangler.jsonc`:
-
-```jsonc
-"TIMER_SLOTS": "timer.slot_1,timer.slot_2,timer.slot_3"
-```
-
-The feature is disabled when `TIMER_SLOTS` is empty (the default).
+The agent discovers all matching pairs on startup and every 5 minutes. The feature is automatically enabled as soon as at least one valid pair exists.
 
 ### Announcement
 
@@ -194,7 +188,6 @@ The TTS engine is also discovered from your default Assist pipeline (refreshed e
 | `HA_ACCESS_TOKEN` | secret | HA Long-Lived Access Token |
 | `AGENT_API_KEY` | secret | API key for the HA integration |
 | `AI_MODEL` | var | Workers AI model ID (default: `@cf/zai-org/glm-4.7-flash`) |
-| `TIMER_SLOTS` | var | Comma-separated HA timer entity IDs for voice timers (e.g. `timer.slot_1,timer.slot_2`) |
 
 ### HA Integration (`cloudflare_conversation`)
 

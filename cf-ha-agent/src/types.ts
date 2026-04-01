@@ -4,7 +4,6 @@ declare global {
     HA_MCP_URL: string;
     HA_ACCESS_TOKEN: string;
     AGENT_API_KEY: string;
-    TIMER_SLOTS: string; // comma-separated HA timer entity IDs, e.g. "timer.slot_1,timer.slot_2"
   }
 }
 
