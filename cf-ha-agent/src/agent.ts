@@ -1,5 +1,5 @@
 import { Agent } from "agents";
-import { generateText, stepCountIs, tool, type CoreMessage } from "ai";
+import { generateText, stepCountIs, tool, type ModelMessage, type ToolSet } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
 import { z } from "zod";
 import type { ChatRequest, ChatResponse } from "./types";
@@ -47,7 +47,7 @@ const SHORT_UTTERANCE_WORDS = 3;
  * Conservative: when in doubt, returns true (keeping context is safer
  * than dropping it when the user actually needed it).
  */
-function isFollowUp(text: string, history: CoreMessage[]): boolean {
+function isFollowUp(text: string, history: ModelMessage[]): boolean {
   // No history → nothing to follow up on.
   if (history.length === 0) return false;
 
@@ -70,12 +70,12 @@ function isFollowUp(text: string, history: CoreMessage[]): boolean {
 
 // --- History management ---
 
-function countUserTurns(messages: CoreMessage[]): number {
+function countUserTurns(messages: ModelMessage[]): number {
   return messages.filter((m) => m.role === "user").length;
 }
 
 /** Keep the last `maxTurns` user-initiated turns (plus all messages between them). */
-function trimToTurns(messages: CoreMessage[], maxTurns: number): CoreMessage[] {
+function trimToTurns(messages: ModelMessage[], maxTurns: number): ModelMessage[] {
   const userIndices = messages.reduce<number[]>((acc, msg, i) => {
     if (msg.role === "user") acc.push(i);
     return acc;
@@ -476,7 +476,7 @@ export class HomeAssistantAgent extends Agent<Env> {
     return {
       set_timer: tool({
         description: "Set a countdown timer. Use a short descriptive name if the user provided one.",
-        parameters: z.object({
+        inputSchema: z.object({
           name: z.string().optional().describe("Optional short name, e.g. 'pasta', 'eggs'. Omit if user gave none."),
           duration: z.coerce.string().describe("Duration string, e.g. '5 minutes', '1 hour 30 minutes', '90 seconds'"),
         }),
@@ -531,7 +531,7 @@ export class HomeAssistantAgent extends Agent<Env> {
 
       cancel_timer: tool({
         description: "Cancel an active timer by name.",
-        parameters: z.object({
+        inputSchema: z.object({
           name: z.string().describe("Name of the timer to cancel, e.g. 'pasta'"),
         }),
         execute: async ({ name }) => {
@@ -551,7 +551,7 @@ export class HomeAssistantAgent extends Agent<Env> {
 
       list_timers: tool({
         description: "List all active timers and their remaining time.",
-        parameters: z.object({}),
+        inputSchema: z.object({}),
         execute: async () => {
           const rows = [...agent.sql`SELECT * FROM timers ORDER BY fire_at ASC`] as Array<{
             name: string;
@@ -572,12 +572,12 @@ export class HomeAssistantAgent extends Agent<Env> {
     const history = followUp ? fullHistory : [];
     const systemPrompt = buildSystemPrompt(request);
 
-    const userMessage: CoreMessage = { role: "user", content: request.text };
-    const messages: CoreMessage[] = [...history, userMessage];
+    const userMessage: ModelMessage = { role: "user", content: request.text };
+    const messages: ModelMessage[] = [...history, userMessage];
 
     const workersai = createWorkersAI({ binding: this.env.AI });
     let responseText: string;
-    let responseMessages: CoreMessage[] = [];
+    let responseMessages: ModelMessage[] = [];
 
     try {
       const mcpTools = this.getToolsSafe();
@@ -585,7 +585,7 @@ export class HomeAssistantAgent extends Agent<Env> {
       const timerTools = timerSlotsRow?.value
         ? this.getTimerTools(request.context?.satellite_id, timerSlotsRow.value, request.text)
         : {};
-      const tools = { ...mcpTools, ...timerTools };
+      const tools: ToolSet = { ...mcpTools, ...timerTools } as ToolSet;
       const toolCount = Object.keys(tools).length;
       console.log(`[chat] ${toolCount} tools (${Object.keys(timerTools).length} timer), history=${history.length} msgs (followUp=${followUp}), conversation=${request.conversation_id}`);
 
@@ -605,8 +605,8 @@ export class HomeAssistantAgent extends Agent<Env> {
           const step = result.steps[i];
           if (step.toolResults?.length) {
             const last = step.toolResults[step.toolResults.length - 1];
-            if (typeof last.result === "string" && last.result) {
-              responseText = last.result;
+            if (typeof last.output === "string" && last.output) {
+              responseText = last.output;
               break;
             }
           }
@@ -614,7 +614,7 @@ export class HomeAssistantAgent extends Agent<Env> {
       }
 
       // Store full response chain including tool-call and tool-result messages
-      responseMessages = result.response.messages as CoreMessage[];
+      responseMessages = result.response.messages as ModelMessage[];
     } catch (err) {
       console.error("AI generation error:", err);
 
@@ -662,7 +662,7 @@ export class HomeAssistantAgent extends Agent<Env> {
     )`;
   }
 
-  private loadHistory(conversationId: string): CoreMessage[] {
+  private loadHistory(conversationId: string): ModelMessage[] {
     const rows = [
       ...this.sql`SELECT messages_json FROM conversations
         WHERE conversation_id = ${conversationId}`,
@@ -675,7 +675,7 @@ export class HomeAssistantAgent extends Agent<Env> {
     }
   }
 
-  private saveHistory(conversationId: string, messages: CoreMessage[]): void {
+  private saveHistory(conversationId: string, messages: ModelMessage[]): void {
     this.sql`INSERT OR REPLACE INTO conversations (conversation_id, messages_json, updated_at)
       VALUES (${conversationId}, ${JSON.stringify(messages)}, unixepoch())`;
   }

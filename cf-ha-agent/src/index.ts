@@ -43,7 +43,7 @@ export default {
 
   // Cron trigger: wake the DO and refresh MCP tools periodically.
   // This keeps the MCP connection warm so requests don't hit cold starts.
-  async scheduled(_event: ScheduledEvent, env: Env): Promise<void> {
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
     const agent = await getAgentByName(
       env.HOME_ASSISTANT_AGENT,
       "home-assistant"
