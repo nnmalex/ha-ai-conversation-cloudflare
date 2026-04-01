@@ -1,6 +1,7 @@
 import { Agent } from "agents";
-import { generateText, stepCountIs, type CoreMessage } from "ai";
+import { generateText, stepCountIs, tool, type CoreMessage } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
+import { z } from "zod";
 import type { ChatRequest, ChatResponse } from "./types";
 import { buildSystemPrompt } from "./system-prompt";
 
@@ -66,6 +67,27 @@ export class HomeAssistantAgent extends Agent<Env> {
         await this.mcp.discoverIfConnected(id);
         console.log(`[refreshMcp] ${this.getToolCount()} tools`);
       }
+    }
+    await this.discoverHaConfig();
+  }
+
+  private async discoverHaConfig(): Promise<void> {
+    try {
+      const base = new URL(this.env.HA_MCP_URL).origin;
+      const res = await fetch(`${base}/api/assist_pipeline/pipeline`, {
+        headers: { Authorization: `Bearer ${this.env.HA_ACCESS_TOKEN}` },
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as { pipelines?: Array<{ preferred?: boolean; tts_engine?: string }> };
+      const pipelines = data.pipelines ?? (Array.isArray(data) ? (data as Array<{ preferred?: boolean; tts_engine?: string }>) : []);
+      const preferred = pipelines.find((p) => p.preferred) ?? pipelines[0];
+      if (preferred?.tts_engine) {
+        this.ensureSchema();
+        this.sql`INSERT OR REPLACE INTO config (key, value) VALUES ('tts_engine', ${preferred.tts_engine})`;
+        console.log(`[discoverHaConfig] tts_engine=${preferred.tts_engine}`);
+      }
+    } catch (e) {
+      console.warn("[discoverHaConfig] skipped:", e);
     }
   }
 
@@ -207,6 +229,179 @@ export class HomeAssistantAgent extends Agent<Env> {
     }
   }
 
+  private async callHaService(domain: string, service: string, data: object): Promise<void> {
+    const base = new URL(this.env.HA_MCP_URL).origin;
+    await fetch(`${base}/api/services/${domain}/${service}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.env.HA_ACCESS_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(data),
+    });
+  }
+
+  private scheduleNextAlarm(): void {
+    const rows = [...this.sql`SELECT MIN(fire_at) as t FROM timers`];
+    const t = rows[0]?.t as number | null;
+    if (t) {
+      this.ctx.storage.setAlarm(new Date(t * 1000));
+    }
+  }
+
+  async alarm(): Promise<void> {
+    // Let the base Agent class handle its own scheduled callbacks (e.g. refreshMcp cron)
+    await (super as unknown as { alarm?: () => Promise<void> }).alarm?.();
+
+    this.ensureSchema();
+    const now = Math.floor(Date.now() / 1000);
+    const expired = [...this.sql`SELECT * FROM timers WHERE fire_at <= ${now}`] as Array<{
+      id: string;
+      slot_entity_id: string;
+      name: string;
+      satellite_id: string | null;
+    }>;
+
+    for (const timer of expired) {
+      this.sql`DELETE FROM timers WHERE id = ${timer.id}`;
+      if (timer.satellite_id) {
+        const message = `${timer.name} is done!`;
+        try {
+          await this.callHaService("assist_satellite", "announce", {
+            entity_id: timer.satellite_id,
+            message,
+          });
+        } catch {
+          const rows = [...this.sql`SELECT value FROM config WHERE key = 'tts_engine'`] as Array<{ value: string }>;
+          if (rows.length > 0) {
+            await this.callHaService("tts", "speak", {
+              entity_id: rows[0].value,
+              media_player_entity_id: timer.satellite_id,
+              message,
+            });
+          }
+        }
+      }
+    }
+
+    this.scheduleNextAlarm();
+  }
+
+  private getTimerTools(satelliteId?: string): Record<string, unknown> {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const agent = this;
+
+    function parseDurationSeconds(input: string): number | null {
+      const s = input.toLowerCase().trim();
+      let total = 0;
+      const hourMatch = s.match(/(\d+(?:\.\d+)?)\s*h(?:our)?s?/);
+      const minMatch = s.match(/(\d+(?:\.\d+)?)\s*m(?:in(?:ute)?s?)?(?!\s*s)/);
+      const secMatch = s.match(/(\d+(?:\.\d+)?)\s*s(?:ec(?:ond)?s?)?/);
+      if (hourMatch) total += parseFloat(hourMatch[1]) * 3600;
+      if (minMatch) total += parseFloat(minMatch[1]) * 60;
+      if (secMatch) total += parseFloat(secMatch[1]);
+      if (total === 0 && /^\d+$/.test(s)) total = parseInt(s, 10) * 60; // bare number = minutes
+      return total > 0 ? Math.round(total) : null;
+    }
+
+    function formatHHMMSS(secs: number): string {
+      const h = Math.floor(secs / 3600);
+      const m = Math.floor((secs % 3600) / 60);
+      const s = secs % 60;
+      return [h, m, s].map((v) => String(v).padStart(2, "0")).join(":");
+    }
+
+    function formatDurationName(secs: number): string {
+      const h = Math.floor(secs / 3600);
+      const m = Math.floor((secs % 3600) / 60);
+      const s = secs % 60;
+      const parts: string[] = [];
+      if (h) parts.push(`${h} hour`);
+      if (m) parts.push(`${m} minute`);
+      if (s && !h) parts.push(`${s} second`);
+      return `${parts.join(" ")} timer`;
+    }
+
+    function formatRemaining(secs: number): string {
+      if (secs <= 0) return "done";
+      const h = Math.floor(secs / 3600);
+      const m = Math.floor((secs % 3600) / 60);
+      const s = secs % 60;
+      if (h) return `${h}h ${m}m`;
+      if (m) return `${m}m ${s}s`;
+      return `${s}s`;
+    }
+
+    return {
+      set_timer: tool({
+        description: "Set a countdown timer. Use a short descriptive name if the user provided one.",
+        parameters: z.object({
+          name: z.string().optional().describe("Optional short name, e.g. 'pasta', 'eggs'. Omit if user gave none."),
+          duration: z.string().describe("Duration string, e.g. '5 minutes', '1 hour 30 minutes', '90 seconds'"),
+        }),
+        execute: async ({ name, duration }) => {
+          const durationSecs = parseDurationSeconds(duration);
+          if (!durationSecs) return `Couldn't understand duration "${duration}".`;
+
+          const timerName = name?.trim() || formatDurationName(durationSecs);
+          const slots = (agent.env.TIMER_SLOTS || "").split(",").map((s) => s.trim()).filter(Boolean);
+          const occupied = new Set(
+            ([...agent.sql`SELECT slot_entity_id FROM timers`] as Array<{ slot_entity_id: string }>)
+              .map((r) => r.slot_entity_id)
+          );
+          const freeSlot = slots.find((s) => !occupied.has(s));
+          if (!freeSlot) return "All timer slots are busy — try cancelling one first.";
+
+          const nameHelper = freeSlot.replace("timer.", "input_text.timer_name_");
+          const fireAt = Math.floor(Date.now() / 1000) + durationSecs;
+
+          await agent.callHaService("input_text", "set_value", { entity_id: nameHelper, value: timerName });
+          await agent.callHaService("timer", "start", { entity_id: freeSlot, duration: formatHHMMSS(durationSecs) });
+
+          agent.sql`INSERT OR REPLACE INTO timers (id, slot_entity_id, name, satellite_id, fire_at)
+            VALUES (${crypto.randomUUID()}, ${freeSlot}, ${timerName}, ${satelliteId ?? null}, ${fireAt})`;
+          agent.scheduleNextAlarm();
+
+          return name ? `${timerName.charAt(0).toUpperCase() + timerName.slice(1)} timer set.` : "Set.";
+        },
+      }),
+
+      cancel_timer: tool({
+        description: "Cancel an active timer by name.",
+        parameters: z.object({
+          name: z.string().describe("Name of the timer to cancel, e.g. 'pasta'"),
+        }),
+        execute: async ({ name }) => {
+          const rows = [...agent.sql`SELECT * FROM timers WHERE lower(name) LIKE ${"%" + name.toLowerCase() + "%"}`] as Array<{
+            id: string;
+            slot_entity_id: string;
+            name: string;
+          }>;
+          if (rows.length === 0) return `No timer matching "${name}" found.`;
+          const row = rows[0];
+          await agent.callHaService("timer", "cancel", { entity_id: row.slot_entity_id });
+          agent.sql`DELETE FROM timers WHERE id = ${row.id}`;
+          agent.scheduleNextAlarm();
+          return "Cancelled.";
+        },
+      }),
+
+      list_timers: tool({
+        description: "List all active timers and their remaining time.",
+        parameters: z.object({}),
+        execute: async () => {
+          const rows = [...agent.sql`SELECT * FROM timers ORDER BY fire_at ASC`] as Array<{
+            name: string;
+            fire_at: number;
+          }>;
+          if (rows.length === 0) return "No active timers.";
+          const now = Math.floor(Date.now() / 1000);
+          return rows.map((r) => `${r.name}: ${formatRemaining(r.fire_at - now)}`).join(", ");
+        },
+      }),
+    };
+  }
+
   private async chat(request: ChatRequest): Promise<ChatResponse> {
     this.ensureSchema();
     const history = this.loadHistory(request.conversation_id);
@@ -220,9 +415,13 @@ export class HomeAssistantAgent extends Agent<Env> {
     let responseMessages: CoreMessage[] = [];
 
     try {
-      const tools = this.getToolsSafe();
+      const mcpTools = this.getToolsSafe();
+      const timerTools = (this.env.TIMER_SLOTS || "").trim()
+        ? this.getTimerTools(request.context?.satellite_id)
+        : {};
+      const tools = { ...mcpTools, ...timerTools };
       const toolCount = Object.keys(tools).length;
-      console.log(`[chat] ${toolCount} tools, history=${history.length} msgs, conversation=${request.conversation_id}`);
+      console.log(`[chat] ${toolCount} tools (${Object.keys(timerTools).length} timer), history=${history.length} msgs, conversation=${request.conversation_id}`);
 
       const result = await generateText({
         model: workersai(this.env.AI_MODEL),
@@ -268,6 +467,17 @@ export class HomeAssistantAgent extends Agent<Env> {
       conversation_id TEXT PRIMARY KEY,
       messages_json TEXT NOT NULL,
       updated_at INTEGER DEFAULT (unixepoch())
+    )`;
+    this.sql`CREATE TABLE IF NOT EXISTS timers (
+      id TEXT PRIMARY KEY,
+      slot_entity_id TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      satellite_id TEXT,
+      fire_at INTEGER NOT NULL
+    )`;
+    this.sql`CREATE TABLE IF NOT EXISTS config (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
     )`;
   }
 

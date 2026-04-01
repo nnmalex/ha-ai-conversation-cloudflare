@@ -84,7 +84,7 @@ Everything exposed by HA's MCP server (Assist API intents):
 - **Covers**: open, close, set position
 - **Fans**: set speed
 - **Vacuums**: start, return to base
-- **Timers**: start, cancel, pause, resume, increase/decrease
+- **Timers**: start, cancel, pause, resume, increase/decrease (see [Voice Timers](#voice-timers) for named timers)
 - **Shopping/to-do lists**: add items, complete items, list items
 - **Weather**: get forecast
 - **General**: get entity state, turn on/off any device
@@ -151,6 +151,39 @@ rest:
 
 Verify the sensor has a value (e.g. `p0n5d399`) in **Developer Tools → States** before testing the script.
 
+## Voice Timers
+
+The agent supports setting arbitrary named and unnamed timers ("set a 5 minute pasta timer", "cancel the pasta timer", "how long is left on my egg timer?"). When a timer expires, the agent announces it on the voice satellite that set it.
+
+### HA Setup
+
+For each timer slot you want to support (e.g. up to 5 simultaneous timers), create two helpers in **Settings → Helpers**:
+
+1. **Timer** — entity ID must follow the pattern `timer.slot_N` (e.g. `timer.slot_1`, `timer.slot_2`)
+2. **Text** — entity ID must follow the pattern `input_text.timer_name_slot_N` (e.g. `input_text.timer_name_slot_1`)
+
+Then add the slot IDs to `cf-ha-agent/wrangler.jsonc`:
+
+```jsonc
+"TIMER_SLOTS": "timer.slot_1,timer.slot_2,timer.slot_3"
+```
+
+The feature is disabled when `TIMER_SLOTS` is empty (the default).
+
+### Announcement
+
+When a timer fires, the agent calls `assist_satellite.announce` on the satellite that set the timer (e.g. `assist_satellite.kitchen`). This uses the satellite's configured TTS engine and plays through its speaker — no HA automation needed.
+
+The TTS engine is also discovered from your default Assist pipeline (refreshed every 5 minutes) as a fallback.
+
+### Usage Examples
+
+- "Set a 5 minute timer" → unnamed timer, announced as "5 minute timer is done!"
+- "Set a pasta timer for 10 minutes" → announced as "pasta timer is done!"
+- "How long is left on the pasta timer?"
+- "Cancel the pasta timer"
+- "What timers are active?"
+
 ## Configuration
 
 ### Cloudflare Agent (`cf-ha-agent`)
@@ -161,6 +194,7 @@ Verify the sensor has a value (e.g. `p0n5d399`) in **Developer Tools → States*
 | `HA_ACCESS_TOKEN` | secret | HA Long-Lived Access Token |
 | `AGENT_API_KEY` | secret | API key for the HA integration |
 | `AI_MODEL` | var | Workers AI model ID (default: `@cf/zai-org/glm-4.7-flash`) |
+| `TIMER_SLOTS` | var | Comma-separated HA timer entity IDs for voice timers (e.g. `timer.slot_1,timer.slot_2`) |
 
 ### HA Integration (`cloudflare_conversation`)
 
