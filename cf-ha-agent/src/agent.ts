@@ -334,9 +334,36 @@ export class HomeAssistantAgent extends Agent<Env> {
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const agent = this;
 
+    const WORD_NUMS: Record<string, number> = {
+      zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7,
+      eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13,
+      fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18,
+      nineteen: 19, twenty: 20, thirty: 30, forty: 40, fifty: 50,
+      half: 0.5, a: 1, an: 1,
+    };
+
+    function wordsToDigits(s: string): string {
+      // "twenty-five" / "twenty five" -> 25
+      s = s.replace(
+        /\b(twenty|thirty|forty|fifty)[-\s]+(one|two|three|four|five|six|seven|eight|nine)\b/gi,
+        (_, tens, ones) => String((WORD_NUMS[tens.toLowerCase()] ?? 0) + (WORD_NUMS[ones.toLowerCase()] ?? 0)),
+      );
+      // single word numbers: "five minutes" -> "5 minutes"
+      s = s.replace(
+        /\b(zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty)\b/gi,
+        (w) => String(WORD_NUMS[w.toLowerCase()] ?? w),
+      );
+      // "half an hour" -> "0.5 hours", "half a minute" -> "0.5 minutes"
+      s = s.replace(/\bhalf\s+(?:an?\s+)?(hour|minute|second)/gi, "0.5 $1");
+      // "a minute" / "an hour" as standalone duration
+      s = s.replace(/\b(?:a|an)\s+(hour|minute|second)/gi, "1 $1");
+      return s;
+    }
+
     function parseDurationSeconds(input: string | number): number | null {
-      const s = String(input).toLowerCase().trim();
-      if (!s || s === "undefined" || s === "null") return null;
+      const raw = String(input).toLowerCase().trim();
+      if (!raw || raw === "undefined" || raw === "null") return null;
+      const s = wordsToDigits(raw);
       let total = 0;
       const hourMatch = s.match(/(\d+(?:\.\d+)?)\s*h(?:our)?s?/);
       const minMatch = s.match(/(\d+(?:\.\d+)?)\s*m(?:in(?:ute)?s?)?(?!\s*s)/);
@@ -368,14 +395,14 @@ export class HomeAssistantAgent extends Agent<Env> {
 
     /** Extract a timer name from user text like "set a pasta timer for 5 minutes" -> "pasta" */
     function extractTimerName(text: string): string | null {
-      const s = text.toLowerCase().trim();
-      // "set a <name> timer" — extract word(s) between "a/an" and "timer"
-      const match = s.match(/\b(?:a|an)\s+(.+?)\s+timer\b/);
+      const s = wordsToDigits(text.toLowerCase().trim());
+      // "set a <name> timer" or "set <name> timer" — article is optional
+      const match = s.match(/\bset\s+(?:(?:a|an|the)\s+)?(.+?)\s+timer\b/);
       if (!match) return null;
       // Remove duration words from the captured name
       const name = match[1]
-        .replace(/\d+[\s-]*(hour|minute|second|min|sec|hr)s?\b/gi, "")
-        .replace(/\b(for|of)\b/g, "")
+        .replace(/\d+(?:\.\d+)?[\s-]*(hour|minute|second|min|sec|hr)s?\b/gi, "")
+        .replace(/\b(for|of|to)\b/g, "")
         .trim();
       return name || null;
     }
