@@ -69,6 +69,8 @@ export class HomeAssistantAgent extends Agent<Env> {
       }
     }
     await this.discoverHaConfig();
+    // Safety net: process any expired timers that the scheduled callback missed
+    await this.handleTimerExpiry();
   }
 
   private async discoverHaConfig(): Promise<void> {
@@ -247,7 +249,8 @@ export class HomeAssistantAgent extends Agent<Env> {
 
   private async callHaService(domain: string, service: string, data: object): Promise<void> {
     const base = new URL(this.env.HA_MCP_URL).origin;
-    await fetch(`${base}/api/services/${domain}/${service}`, {
+    const url = `${base}/api/services/${domain}/${service}`;
+    const resp = await fetch(url, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${this.env.HA_ACCESS_TOKEN}`,
@@ -255,23 +258,32 @@ export class HomeAssistantAgent extends Agent<Env> {
       },
       body: JSON.stringify(data),
     });
+    if (!resp.ok) {
+      const body = await resp.text().catch(() => "");
+      console.error(`[callHaService] ${domain}.${service} failed: ${resp.status} ${body}`);
+      throw new Error(`HA service ${domain}.${service} returned ${resp.status}`);
+    }
   }
 
-  private scheduleNextAlarm(): void {
+  private async scheduleNextAlarm(): Promise<void> {
+    // Cancel any existing timer-expiry schedule
+    const existing = this.getSchedules({ type: "scheduled" });
+    for (const s of existing) {
+      if (s.callback === "handleTimerExpiry") {
+        this.cancelSchedule(s.id);
+      }
+    }
+
     const rows = [...this.sql`SELECT MIN(fire_at) as t FROM timers`];
     const t = rows[0]?.t as number | null;
     if (t) {
-      this.ctx.storage.setAlarm(new Date(t * 1000));
+      const when = new Date(t * 1000);
+      await this.schedule(when, "handleTimerExpiry");
+      console.log(`[scheduleNextAlarm] scheduled for ${when.toISOString()}`);
     }
   }
 
-  async alarm(): Promise<void> {
-    // Let the base Agent class handle its own scheduled callbacks (e.g. refreshMcp cron)
-    const proto = Object.getPrototypeOf(Object.getPrototypeOf(this));
-    if (typeof proto.alarm === "function") {
-      await proto.alarm.call(this);
-    }
-
+  async handleTimerExpiry(): Promise<void> {
     this.ensureSchema();
     const now = Math.floor(Date.now() / 1000);
     const expired = [...this.sql`SELECT * FROM timers WHERE fire_at <= ${now}`] as Array<{
@@ -280,38 +292,47 @@ export class HomeAssistantAgent extends Agent<Env> {
       name: string;
       satellite_id: string | null;
     }>;
+    console.log(`[handleTimerExpiry] ${expired.length} expired timer(s)`);
 
     for (const timer of expired) {
       this.sql`DELETE FROM timers WHERE id = ${timer.id}`;
+      const message = `${timer.name} is done!`;
+      console.log(`[handleTimerExpiry] "${message}" -> ${timer.satellite_id ?? "(no satellite)"}`);
+
       if (timer.satellite_id) {
-        const message = `${timer.name} is done!`;
         try {
           await this.callHaService("assist_satellite", "announce", {
             entity_id: timer.satellite_id,
             message,
           });
-        } catch {
+        } catch (e) {
+          console.warn(`[handleTimerExpiry] announce failed, trying tts: ${e}`);
           const rows = [...this.sql`SELECT value FROM config WHERE key = 'tts_engine'`] as Array<{ value: string }>;
           if (rows.length > 0) {
-            await this.callHaService("tts", "speak", {
-              entity_id: rows[0].value,
-              media_player_entity_id: timer.satellite_id,
-              message,
-            });
+            try {
+              await this.callHaService("tts", "speak", {
+                entity_id: rows[0].value,
+                media_player_entity_id: timer.satellite_id,
+                message,
+              });
+            } catch (e2) {
+              console.error(`[handleTimerExpiry] tts also failed: ${e2}`);
+            }
           }
         }
       }
     }
 
-    this.scheduleNextAlarm();
+    await this.scheduleNextAlarm();
   }
 
-  private getTimerTools(satelliteId: string | undefined, timerSlots: string): Record<string, unknown> {
+  private getTimerTools(satelliteId: string | undefined, timerSlots: string, userText: string): Record<string, unknown> {
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const agent = this;
 
-    function parseDurationSeconds(input: string): number | null {
-      const s = input.toLowerCase().trim();
+    function parseDurationSeconds(input: string | number): number | null {
+      const s = String(input).toLowerCase().trim();
+      if (!s || s === "undefined" || s === "null") return null;
       let total = 0;
       const hourMatch = s.match(/(\d+(?:\.\d+)?)\s*h(?:our)?s?/);
       const minMatch = s.match(/(\d+(?:\.\d+)?)\s*m(?:in(?:ute)?s?)?(?!\s*s)/);
@@ -341,6 +362,20 @@ export class HomeAssistantAgent extends Agent<Env> {
       return `${parts.join(" ")} timer`;
     }
 
+    /** Extract a timer name from user text like "set a pasta timer for 5 minutes" -> "pasta" */
+    function extractTimerName(text: string): string | null {
+      const s = text.toLowerCase().trim();
+      // "set a <name> timer" — extract word(s) between "a/an" and "timer"
+      const match = s.match(/\b(?:a|an)\s+(.+?)\s+timer\b/);
+      if (!match) return null;
+      // Remove duration words from the captured name
+      const name = match[1]
+        .replace(/\d+[\s-]*(hour|minute|second|min|sec|hr)s?\b/gi, "")
+        .replace(/\b(for|of)\b/g, "")
+        .trim();
+      return name || null;
+    }
+
     function formatRemaining(secs: number): string {
       if (secs <= 0) return "done";
       const h = Math.floor(secs / 3600);
@@ -356,19 +391,40 @@ export class HomeAssistantAgent extends Agent<Env> {
         description: "Set a countdown timer. Use a short descriptive name if the user provided one.",
         parameters: z.object({
           name: z.string().optional().describe("Optional short name, e.g. 'pasta', 'eggs'. Omit if user gave none."),
-          duration: z.string().describe("Duration string, e.g. '5 minutes', '1 hour 30 minutes', '90 seconds'"),
+          duration: z.coerce.string().describe("Duration string, e.g. '5 minutes', '1 hour 30 minutes', '90 seconds'"),
         }),
         execute: async ({ name, duration }) => {
-          const durationSecs = parseDurationSeconds(duration);
-          if (!durationSecs) return `Couldn't understand duration "${duration}".`;
+          // Prefer parsing from the original user text (ground truth) since the model
+          // often strips units (e.g. sends "5" instead of "5 minutes")
+          const durationSecs = parseDurationSeconds(userText) ?? parseDurationSeconds(duration);
+          if (!durationSecs) return `Couldn't understand the duration. Please say something like "set a 5 minute timer".`;
 
-          const timerName = name?.trim() || formatDurationName(durationSecs);
+          const timerName = name?.trim() || extractTimerName(userText) || formatDurationName(durationSecs);
           const slots = timerSlots.split(",").map((s) => s.trim()).filter(Boolean);
-          const occupied = new Set(
-            ([...agent.sql`SELECT slot_entity_id FROM timers`] as Array<{ slot_entity_id: string }>)
-              .map((r) => r.slot_entity_id)
-          );
-          const freeSlot = slots.find((s) => !occupied.has(s));
+
+          // Find a free slot by checking actual HA timer state (source of truth).
+          // This avoids stale SQLite records blocking slots.
+          const base = new URL(agent.env.HA_MCP_URL).origin;
+          const statesResp = await fetch(`${base}/api/states`, {
+            headers: { Authorization: `Bearer ${agent.env.HA_ACCESS_TOKEN}` },
+          });
+          const busySlots = new Set<string>();
+          if (statesResp.ok) {
+            const states = (await statesResp.json()) as Array<{ entity_id: string; state: string }>;
+            for (const s of states) {
+              if (s.entity_id.startsWith("timer.") && s.state !== "idle") {
+                busySlots.add(s.entity_id);
+              }
+            }
+          }
+          // Also clean up stale SQLite records for slots that are idle in HA
+          for (const slot of slots) {
+            if (!busySlots.has(slot)) {
+              agent.sql`DELETE FROM timers WHERE slot_entity_id = ${slot}`;
+            }
+          }
+
+          const freeSlot = slots.find((s) => !busySlots.has(s));
           if (!freeSlot) return "All timer slots are busy — try cancelling one first.";
 
           const nameHelper = freeSlot.replace("timer.", "input_text.timer_name_");
@@ -379,9 +435,10 @@ export class HomeAssistantAgent extends Agent<Env> {
 
           agent.sql`INSERT OR REPLACE INTO timers (id, slot_entity_id, name, satellite_id, fire_at)
             VALUES (${crypto.randomUUID()}, ${freeSlot}, ${timerName}, ${satelliteId ?? null}, ${fireAt})`;
-          agent.scheduleNextAlarm();
+          await agent.scheduleNextAlarm();
 
-          return name ? `${timerName.charAt(0).toUpperCase() + timerName.slice(1)} timer set.` : "Set.";
+          const isNamed = name?.trim() || extractTimerName(userText);
+          return isNamed ? `${timerName.charAt(0).toUpperCase() + timerName.slice(1)} timer set.` : "Set.";
         },
       }),
 
@@ -400,7 +457,7 @@ export class HomeAssistantAgent extends Agent<Env> {
           const row = rows[0];
           await agent.callHaService("timer", "cancel", { entity_id: row.slot_entity_id });
           agent.sql`DELETE FROM timers WHERE id = ${row.id}`;
-          agent.scheduleNextAlarm();
+          await agent.scheduleNextAlarm();
           return "Cancelled.";
         },
       }),
@@ -437,7 +494,7 @@ export class HomeAssistantAgent extends Agent<Env> {
       const mcpTools = this.getToolsSafe();
       const timerSlotsRow = [...this.sql`SELECT value FROM config WHERE key = 'timer_slots'`][0] as { value: string } | undefined;
       const timerTools = timerSlotsRow?.value
-        ? this.getTimerTools(request.context?.satellite_id, timerSlotsRow.value)
+        ? this.getTimerTools(request.context?.satellite_id, timerSlotsRow.value, request.text)
         : {};
       const tools = { ...mcpTools, ...timerTools };
       const toolCount = Object.keys(tools).length;
@@ -451,6 +508,22 @@ export class HomeAssistantAgent extends Agent<Env> {
       });
       console.log(`[chat] steps=${result.steps.length}, toolCalls=${result.steps.reduce((n, s) => n + (s.toolCalls?.length || 0), 0)}`);
       responseText = result.text;
+
+      // Some models stop after tool calls without generating text.
+      // Fall back to the last tool result so the user hears something.
+      if (!responseText) {
+        for (let i = result.steps.length - 1; i >= 0; i--) {
+          const step = result.steps[i];
+          if (step.toolResults?.length) {
+            const last = step.toolResults[step.toolResults.length - 1];
+            if (typeof last.result === "string" && last.result) {
+              responseText = last.result;
+              break;
+            }
+          }
+        }
+      }
+
       // Store full response chain including tool-call and tool-result messages
       responseMessages = result.response.messages as CoreMessage[];
     } catch (err) {
