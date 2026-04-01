@@ -14,6 +14,62 @@ function isQuestion(text: string): boolean {
   return QUESTION_PATTERN.test(text) || text.trimEnd().endsWith("?");
 }
 
+// --- Follow-up detection for context pollution prevention ---
+
+/** Pronouns / anaphora that reference something from a previous turn. */
+const ANAPHORA_PATTERN =
+  /\b(it|its|them|they|that|those|these|this|there)\b/i;
+
+/** Comparatives / relative adjustments that imply "change from current state". */
+const COMPARATIVE_PATTERN =
+  /\b(more|less|brighter|dimmer|warmer|cooler|hotter|colder|louder|quieter|softer|higher|lower|faster|slower|longer|shorter)\b/i;
+
+/** Continuation markers — user wants to add/extend the previous action. */
+const CONTINUATION_PATTERN =
+  /\b(also|too|as\s+well|again|another|and\s+the|same|same\s+thing)\b/i;
+
+/** Corrections / undo — need previous context to know what to reverse. */
+const CORRECTION_PATTERN =
+  /\b(no|nope|never\s*mind|cancel\s+that|undo|not\s+that|wrong|stop\s+that|go\s+back)\b/i;
+
+/** Affirmations — confirming something from the previous turn. */
+const AFFIRMATION_PATTERN = /^\s*(yes|yeah|yep|ok|okay|sure|right|correct|exactly|please)\s*[.!]?\s*$/i;
+
+/** Very short utterance (≤3 words) — likely only makes sense with context.
+ *  e.g. "and the bedroom?", "what about tomorrow?" */
+const SHORT_UTTERANCE_WORDS = 3;
+
+/**
+ * Detect whether the current user text is a follow-up to the previous
+ * conversation turn. If not, history can be safely dropped to avoid
+ * context pollution (irrelevant entities/topics confusing the model).
+ *
+ * Conservative: when in doubt, returns true (keeping context is safer
+ * than dropping it when the user actually needed it).
+ */
+function isFollowUp(text: string, history: CoreMessage[]): boolean {
+  // No history → nothing to follow up on.
+  if (history.length === 0) return false;
+
+  const trimmed = text.trim();
+
+  // Affirmations / very short replies are almost always follow-ups.
+  if (AFFIRMATION_PATTERN.test(trimmed)) return true;
+
+  const wordCount = trimmed.split(/\s+/).length;
+  if (wordCount <= SHORT_UTTERANCE_WORDS) return true;
+
+  // Check linguistic markers.
+  if (ANAPHORA_PATTERN.test(trimmed)) return true;
+  if (COMPARATIVE_PATTERN.test(trimmed)) return true;
+  if (CONTINUATION_PATTERN.test(trimmed)) return true;
+  if (CORRECTION_PATTERN.test(trimmed)) return true;
+
+  return false;
+}
+
+// --- History management ---
+
 function countUserTurns(messages: CoreMessage[]): number {
   return messages.filter((m) => m.role === "user").length;
 }
@@ -511,7 +567,9 @@ export class HomeAssistantAgent extends Agent<Env> {
 
   private async chat(request: ChatRequest): Promise<ChatResponse> {
     this.ensureSchema();
-    const history = this.loadHistory(request.conversation_id);
+    const fullHistory = this.loadHistory(request.conversation_id);
+    const followUp = isFollowUp(request.text, fullHistory);
+    const history = followUp ? fullHistory : [];
     const systemPrompt = buildSystemPrompt(request);
 
     const userMessage: CoreMessage = { role: "user", content: request.text };
@@ -529,7 +587,7 @@ export class HomeAssistantAgent extends Agent<Env> {
         : {};
       const tools = { ...mcpTools, ...timerTools };
       const toolCount = Object.keys(tools).length;
-      console.log(`[chat] ${toolCount} tools (${Object.keys(timerTools).length} timer), history=${history.length} msgs, conversation=${request.conversation_id}`);
+      console.log(`[chat] ${toolCount} tools (${Object.keys(timerTools).length} timer), history=${history.length} msgs (followUp=${followUp}), conversation=${request.conversation_id}`);
 
       const result = await generateText({
         model: workersai(this.env.AI_MODEL),
@@ -571,10 +629,9 @@ export class HomeAssistantAgent extends Agent<Env> {
       responseMessages = [{ role: "assistant", content: responseText }];
     }
 
-    // Save full message chain — includes tool calls so the AI knows
-    // previous responses involved tool usage, not just text.
-    // Questions expand the window by 1 each time; non-questions reset to default.
-    const allMessages = [...history, userMessage, ...responseMessages];
+    // Always save against fullHistory so follow-up detection has the full
+    // recent window available, even if we dropped history for this request.
+    const allMessages = [...fullHistory, userMessage, ...responseMessages];
     const turnsToKeep = isQuestion(request.text)
       ? countUserTurns(allMessages)
       : DEFAULT_HISTORY_TURNS;
