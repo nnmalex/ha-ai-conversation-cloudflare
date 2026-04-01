@@ -201,15 +201,28 @@ Configured via the UI:
 
 ## AI Models
 
-The agent uses Workers AI. Recommended models with tool calling support:
+The agent uses Cloudflare Workers AI. Change the model by setting `AI_MODEL` in `wrangler.jsonc` or via `wrangler secret put AI_MODEL`.
 
-| Model | Context | Best For |
-|---|---|---|
-| `@cf/zai-org/glm-4.7-flash` (default) | 131K | Fast, cheap, good tool calling |
-| `@cf/meta/llama-4-scout-17b-16e-instruct` | 131K | Best overall capability |
-| `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | 24K | Strongest reasoning |
+### Recommended
 
-Change the model by setting the `AI_MODEL` variable in `wrangler.jsonc` or via `wrangler secret put AI_MODEL`.
+| Model | Context | Latency | Input $/M | Notes |
+|---|---|---|---|---|
+| **`@cf/zai-org/glm-4.7-flash`** (default) | 131K | ~2.5s | $0.06 | Best balance of speed, cost, and tool calling for voice |
+| `@cf/meta/llama-4-scout-17b-16e-instruct` | 131K | ~6s | $0.27 | Most reliable tool calling, but slower |
+| `@cf/openai/gpt-oss-20b` | 128K | ~2s | $0.20 | Fastest, but inconsistent (empty responses ~40% of the time) |
+
+### Other options
+
+| Model | Context | Input $/M | Notes |
+|---|---|---|---|
+| `@cf/ibm-granite/granite-4.0-h-micro` | 131K | $0.017 | Cheapest, but slow on MCP tool calls (~24s for lights) |
+| `@cf/qwen/qwen3-30b-a3b-fp8` | 32K | $0.051 | Good agent capabilities, but 32K context is tight with 34+ tools |
+| `@cf/nvidia/nemotron-3-120b-a12b` | 256K | $0.50 | Highest capability, overkill for home automation |
+| `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | 24K | $0.29 | Strong reasoning, but 24K context too small for 34+ tools |
+
+### Why glm-4.7-flash?
+
+It has the best latency-to-cost ratio for voice assistants (~2.5s responses at $0.06/M input tokens). Its main weakness — unreliable tool argument passing (sends numbers instead of strings, omits args) — is handled by the agent code, which extracts duration and timer names directly from the user's text as a fallback.
 
 ## License
 
