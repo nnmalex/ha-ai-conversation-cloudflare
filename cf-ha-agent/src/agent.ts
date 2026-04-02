@@ -125,11 +125,12 @@ export class HomeAssistantAgent extends Agent<Env> {
       }
     }
     await this.discoverHaConfig();
-    // Safety net: process any expired timers that the scheduled callback missed
+    // Safety net: process any expired/firing timers that the scheduled callback missed
     try {
       await this.handleTimerExpiry();
+      await this.handleTimerRing();
     } catch (e) {
-      console.warn("[refreshMcp] handleTimerExpiry safety net failed:", e);
+      console.warn("[refreshMcp] timer safety net failed:", e);
     }
   }
 
@@ -334,7 +335,7 @@ export class HomeAssistantAgent extends Agent<Env> {
       }
     }
 
-    const rows = [...this.sql`SELECT MIN(fire_at) as t FROM timers`];
+    const rows = [...this.sql`SELECT MIN(fire_at) as t FROM timers WHERE state = 'active'`];
     const t = rows[0]?.t as number | null;
     if (t) {
       const when = new Date(t * 1000);
@@ -343,10 +344,49 @@ export class HomeAssistantAgent extends Agent<Env> {
     }
   }
 
+  private async scheduleNextRing(): Promise<void> {
+    const existing = this.getSchedules({ type: "scheduled" });
+    for (const s of existing) {
+      if (s.callback === "handleTimerRing") {
+        this.cancelSchedule(s.id);
+      }
+    }
+
+    const firingCount = [...this.sql`SELECT COUNT(*) as c FROM timers WHERE state = 'firing'`][0]?.c as number;
+    if (firingCount > 0) {
+      await this.schedule(new Date(Date.now() + 10_000), "handleTimerRing");
+      console.log(`[scheduleNextRing] ${firingCount} firing timer(s), next ring in 10s`);
+    }
+  }
+
+  private async announceToSatellite(satelliteId: string | null, message: string): Promise<void> {
+    if (!satelliteId) return;
+    try {
+      await this.callHaService("assist_satellite", "announce", {
+        entity_id: satelliteId,
+        message,
+      });
+    } catch (e) {
+      console.warn(`[announce] announce failed, trying tts: ${e}`);
+      const rows = [...this.sql`SELECT value FROM config WHERE key = 'tts_engine'`] as Array<{ value: string }>;
+      if (rows.length > 0) {
+        try {
+          await this.callHaService("tts", "speak", {
+            entity_id: rows[0].value,
+            media_player_entity_id: satelliteId,
+            message,
+          });
+        } catch (e2) {
+          console.error(`[announce] tts also failed: ${e2}`);
+        }
+      }
+    }
+  }
+
   async handleTimerExpiry(): Promise<void> {
     this.ensureSchema();
     const now = Math.floor(Date.now() / 1000);
-    const expired = [...this.sql`SELECT * FROM timers WHERE fire_at <= ${now}`] as Array<{
+    const expired = [...this.sql`SELECT * FROM timers WHERE fire_at <= ${now} AND state = 'active'`] as Array<{
       id: string;
       slot_entity_id: string;
       name: string;
@@ -355,35 +395,38 @@ export class HomeAssistantAgent extends Agent<Env> {
     console.log(`[handleTimerExpiry] ${expired.length} expired timer(s)`);
 
     for (const timer of expired) {
-      this.sql`DELETE FROM timers WHERE id = ${timer.id}`;
+      this.sql`UPDATE timers SET state = 'firing', ring_count = 1 WHERE id = ${timer.id}`;
       const message = `${timer.name} is done!`;
       console.log(`[handleTimerExpiry] "${message}" -> ${timer.satellite_id ?? "(no satellite)"}`);
-
-      if (timer.satellite_id) {
-        try {
-          await this.callHaService("assist_satellite", "announce", {
-            entity_id: timer.satellite_id,
-            message,
-          });
-        } catch (e) {
-          console.warn(`[handleTimerExpiry] announce failed, trying tts: ${e}`);
-          const rows = [...this.sql`SELECT value FROM config WHERE key = 'tts_engine'`] as Array<{ value: string }>;
-          if (rows.length > 0) {
-            try {
-              await this.callHaService("tts", "speak", {
-                entity_id: rows[0].value,
-                media_player_entity_id: timer.satellite_id,
-                message,
-              });
-            } catch (e2) {
-              console.error(`[handleTimerExpiry] tts also failed: ${e2}`);
-            }
-          }
-        }
-      }
+      await this.announceToSatellite(timer.satellite_id, message);
     }
 
     await this.scheduleNextAlarm();
+    await this.scheduleNextRing();
+  }
+
+  async handleTimerRing(): Promise<void> {
+    this.ensureSchema();
+    const MAX_RINGS = 20;
+    const firing = [...this.sql`SELECT * FROM timers WHERE state = 'firing'`] as Array<{
+      id: string;
+      name: string;
+      satellite_id: string | null;
+      ring_count: number;
+    }>;
+    console.log(`[handleTimerRing] ${firing.length} firing timer(s)`);
+
+    for (const timer of firing) {
+      if (timer.ring_count >= MAX_RINGS) {
+        console.log(`[handleTimerRing] auto-dismissing "${timer.name}" after ${MAX_RINGS} rings`);
+        this.sql`DELETE FROM timers WHERE id = ${timer.id}`;
+        continue;
+      }
+      this.sql`UPDATE timers SET ring_count = ring_count + 1 WHERE id = ${timer.id}`;
+      await this.announceToSatellite(timer.satellite_id, `${timer.name} is done!`);
+    }
+
+    await this.scheduleNextRing();
   }
 
   private getTimerTools(satelliteId: string | undefined, timerSlots: string, userText: string): Record<string, unknown> {
@@ -504,10 +547,10 @@ export class HomeAssistantAgent extends Agent<Env> {
               }
             }
           }
-          // Also clean up stale SQLite records for slots that are idle in HA
+          // Clean up stale active records for slots that are idle in HA (don't touch firing timers)
           for (const slot of slots) {
             if (!busySlots.has(slot)) {
-              agent.sql`DELETE FROM timers WHERE slot_entity_id = ${slot}`;
+              agent.sql`DELETE FROM timers WHERE slot_entity_id = ${slot} AND state = 'active'`;
             }
           }
 
@@ -530,7 +573,7 @@ export class HomeAssistantAgent extends Agent<Env> {
       }),
 
       cancel_timer: tool({
-        description: "Cancel an active timer by name.",
+        description: "Cancel an active or ringing timer by name.",
         inputSchema: z.object({
           name: z.string().describe("Name of the timer to cancel, e.g. 'pasta'"),
         }),
@@ -539,27 +582,56 @@ export class HomeAssistantAgent extends Agent<Env> {
             id: string;
             slot_entity_id: string;
             name: string;
+            state: string;
           }>;
           if (rows.length === 0) return `No timer matching "${name}" found.`;
           const row = rows[0];
-          await agent.callHaService("timer", "cancel", { entity_id: row.slot_entity_id });
+          if (row.state === "active") {
+            await agent.callHaService("timer", "cancel", { entity_id: row.slot_entity_id });
+          }
           agent.sql`DELETE FROM timers WHERE id = ${row.id}`;
           await agent.scheduleNextAlarm();
+          await agent.scheduleNextRing();
           return "Cancelled.";
         },
       }),
 
       list_timers: tool({
-        description: "List all active timers and their remaining time.",
+        description: "List all active and ringing timers.",
         inputSchema: z.object({}),
         execute: async () => {
-          const rows = [...agent.sql`SELECT * FROM timers ORDER BY fire_at ASC`] as Array<{
+          const rows = [...agent.sql`SELECT * FROM timers ORDER BY state ASC, fire_at ASC`] as Array<{
             name: string;
             fire_at: number;
+            state: string;
           }>;
           if (rows.length === 0) return "No active timers.";
           const now = Math.floor(Date.now() / 1000);
-          return rows.map((r) => `${r.name}: ${formatRemaining(r.fire_at - now)}`).join(", ");
+          return rows.map((r) =>
+            r.state === "firing"
+              ? `${r.name}: RINGING`
+              : `${r.name}: ${formatRemaining(r.fire_at - now)}`
+          ).join(", ");
+        },
+      }),
+
+      dismiss_timer: tool({
+        description: "Dismiss/stop a ringing timer alarm. Use when the user says 'stop', 'dismiss', 'okay', or wants to silence the alarm.",
+        inputSchema: z.object({
+          name: z.string().optional().describe("Name of specific timer to dismiss. Omit to dismiss all ringing timers."),
+        }),
+        execute: async ({ name }) => {
+          if (name) {
+            const rows = [...agent.sql`SELECT * FROM timers WHERE state = 'firing' AND lower(name) LIKE ${"%" + name.toLowerCase() + "%"}`] as Array<{ id: string }>;
+            if (rows.length === 0) return "No ringing timer matching that name.";
+            for (const r of rows) agent.sql`DELETE FROM timers WHERE id = ${r.id}`;
+          } else {
+            const count = [...agent.sql`SELECT COUNT(*) as c FROM timers WHERE state = 'firing'`][0]?.c as number;
+            if (count === 0) return "No ringing timers to dismiss.";
+            agent.sql`DELETE FROM timers WHERE state = 'firing'`;
+          }
+          await agent.scheduleNextRing();
+          return "Dismissed.";
         },
       }),
     };
@@ -657,12 +729,17 @@ export class HomeAssistantAgent extends Agent<Env> {
       slot_entity_id TEXT NOT NULL UNIQUE,
       name TEXT NOT NULL,
       satellite_id TEXT,
-      fire_at INTEGER NOT NULL
+      fire_at INTEGER NOT NULL,
+      state TEXT NOT NULL DEFAULT 'active',
+      ring_count INTEGER NOT NULL DEFAULT 0
     )`;
     this.sql`CREATE TABLE IF NOT EXISTS config (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     )`;
+    // Migration: add columns for persistent timer notifications
+    try { this.sql`ALTER TABLE timers ADD COLUMN state TEXT NOT NULL DEFAULT 'active'`; } catch {}
+    try { this.sql`ALTER TABLE timers ADD COLUMN ring_count INTEGER NOT NULL DEFAULT 0`; } catch {}
   }
 
   private loadHistory(conversationId: string): ModelMessage[] {

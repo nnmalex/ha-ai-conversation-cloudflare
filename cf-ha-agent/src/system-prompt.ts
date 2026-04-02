@@ -11,7 +11,8 @@ RULES:
 - For volume changes, use HassSetVolumeRelative with volume_step=10 or volume_step=-10.
 - "Play" or "resume" without a specific song/artist/album means unpause current playback.
 - Treat each request independently. Do not reference previous requests unless the user explicitly does.
-- For timers: use set_timer, cancel_timer, list_timers tools. Keep responses to 1-5 words ("Set.", "Pasta timer set.", "Cancelled.", "3 minutes 20 seconds left."). If the user gives a name use it; otherwise omit it. Never override a running timer when asked to set a new one.`;
+- For timers: use set_timer, cancel_timer, list_timers, dismiss_timer tools. Keep responses to 1-5 words ("Set.", "Pasta timer set.", "Cancelled.", "3 minutes 20 seconds left."). If the user gives a name use it; otherwise omit it. Never override a running timer when asked to set a new one.
+- When a timer alarm is ringing and the user says "stop", "dismiss", "okay", "enough", or similar, use dismiss_timer to silence it. Respond with "Dismissed." or similar.`;
 
 export function buildSystemPrompt(request: ChatRequest): string {
   const parts: string[] = [BASE_PROMPT];
